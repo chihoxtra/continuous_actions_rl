@@ -1,5 +1,6 @@
 import numpy as np
 import random
+import copy
 import torch
 import torch.optim as optim
 import torch.nn.functional as F
@@ -7,21 +8,32 @@ import torch.nn.utils as U
 from collections import namedtuple, deque
 from OUnoise import OUnoise
 
-from network_models import Critic_Net, Actor_Net
+from DDPG_models import Critic_Net, Actor_Net
+"""
+change log:
+    for 20 agents:
+    - batch size: working 128
+    - update loop: working 20
+    - lr: working 1e-4
+    for single agent:
+    - batch size: working 128 test 128
+    - update loop: working 20 test 8
+    - lr: last 1e-4 working actor: 1e-4; crtic: 1e-4
+    - update every: working 2 test 100
+"""
 
 ##### CONFIG PARMAS #####
-BUFFER_SIZE = int(1e5)        # replay buffer size
-BATCH_SIZE = 64               # minibatch size
-REPLAY_MIN_SIZE = int(1e5)    # min len of memory before replay start #int(5e3)
-GAMMA = 0.999                 # discount factor
-TAU = 1e-2                    # for soft update of target parameters
-LR_ACTOR = 1e-4               # learning rate #5e4
-LR_CRITIC = 1e-4              # learning rate #5e4
-
-UPDATE_EVERY = 20             # how often to update the network
-GRAD_CLIP_MAX = 1.0           # max gradient allowed
-GRAD_CLIP_START = int(1e3)    # when to start gradient clip
-REWARD_SCALE = False          # scale reward by 1/10
+BUFFER_SIZE = int(1e6)        # replay buffer size
+BATCH_SIZE = 128              # minibatch size #128
+REPLAY_MIN_SIZE = int(1e4)    # min memory size before replay start per agent
+GAMMA = 0.99                  # discount factor
+TAU = 1e-3                    # for soft update of target parameters
+LR_ACTOR = 1e-4               # Actor Network learning rate #1e4
+LR_CRITIC = 1e-4              # Critic Network learning rate #1e4
+UPDATE_LOOP = 20              # no of update per step #20(m_agent)
+UPDATE_EVERY = 2              # how often to update the network
+GRAD_CLIP_MAX = 1.0           # max gradient allowed #1.0
+REWARD_SCALE = False          # scale reward by #0.1
 ADD_NOISE = True              # add noise for exploration?
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -49,12 +61,13 @@ class DDPG_Agent():
         self.critic_local = Critic_Net(state_space, action_space, seed).to(device)
         self.critic_target = Critic_Net(state_space, action_space, seed).to(device)
         self.critic_optim = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC)
-        self.critic_target.eval()
+        #self.critic_target.eval() #target network is for evaluation only
 
         self.actor_local = Actor_Net(state_space, action_space, seed).to(device)
         self.actor_target = Actor_Net(state_space, action_space, seed).to(device)
         self.actor_optim = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
-        self.actor_target.eval()
+
+        #self.actor_target.eval() #target network is for evaluation only
 
         # Replay memory
         self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, action_space,
@@ -74,10 +87,7 @@ class DDPG_Agent():
         self.noise_history = deque(maxlen=1000)
 
     def _toTorch(self, s):
-        if self.num_agents > 1:
-            return torch.from_numpy(s).float().unsqueeze(0).to(device)
-        else:
-            return torch.from_numpy(s).float().to(device)
+        return torch.from_numpy(s).float().to(device)
 
     def step(self, state, action, reward, next_state, done):
         """ handle memory update, learning and target network params update"""
@@ -91,17 +101,21 @@ class DDPG_Agent():
 
         # Save experience in replay memory, #state shape will become 1,33
         if self.num_agents > 1:
-            for i in range(self.num_agents):
-                self.memory.add(self._toTorch(state[i,:]), action[i,:], reward[i],
+            i = 0 #use while loop cause it is faster
+            while i < self.num_agents:
+                self.memory.add(self._toTorch(state[i,:]),
+                                self._toTorch(action[i,:]), reward[i],
                                 self._toTorch(next_state[i,:]), done[i])
+                i += 1
         else:
-            self.memory.add(self._toTorch(state), action, reward,
+            self.memory.add(self._toTorch(state),
+                            self._toTorch(action), reward,
                             self._toTorch(next_state), done)
         # Learn every UPDATE_EVERY time steps.
         self.t_step += 1
 
         # If enough samples are available in memory, get random subset and learn
-        if len(self.memory) >= REPLAY_MIN_SIZE:
+        if len(self.memory) >= REPLAY_MIN_SIZE * self.num_agents:
             if self.is_training == False:
                 print("")
                 print("Prefetch completed. Training starts! \r")
@@ -109,10 +123,11 @@ class DDPG_Agent():
                 print("Device: ", device)
                 self.is_training = True
 
-            # sample from memory
-            experiences = self.memory.sample()
+            for i in range(self.num_agents): #repeated update per step
+                # sample from memory
+                experiences = self.memory.sample()
 
-            self._learn(experiences, GAMMA)
+                self._learn(experiences, GAMMA)
 
             if self.t_step % UPDATE_EVERY == 0:
                 # ------------------- update target network ------------------- #
@@ -130,15 +145,18 @@ class DDPG_Agent():
             action_values (array like, -1:+1) no grad
         """
         # just for evaluation
-        action_values = self.actor_local(self._toTorch(state)).detach()
+        self.actor_local.eval()
+        with torch.no_grad():
+            actions = self.actor_local(self._toTorch(state)).cpu().numpy()
+        self.actor_local.train()
 
-        if self.add_noise:
+        if self.add_noise and np.random.rand() < eps:
             noise = self.noise.sample()
-            action_values += eps * self._toTorch(noise)
+            actions += noise
             # keep track of noise history
-            self.noise_history.append(np.mean(noise))
+            self.noise_history.append(np.mean(np.abs(noise)))
 
-        return np.clip(action_values.cpu().squeeze().numpy(),-1,1)
+        return np.clip(actions.squeeze(), -1 , 1)
 
 
     def _learn(self, experiences, gamma):
@@ -151,12 +169,11 @@ class DDPG_Agent():
         """
         states, actions, rewards, next_states, dones = experiences
 
-        ######################## COMPUTE CRITIC LOSS ########################
+        ######################## CRITIC LOSS ########################
         # 1) next state Q value
         next_state_Q = self.critic_target(next_states, self.actor_target(next_states))
 
         # 2) compute target Q using discount, ns Q, done and reward
-
         target_Q = rewards + (1-dones) * gamma * next_state_Q.detach()
         assert(target_Q.requires_grad == False)
 
@@ -164,29 +181,22 @@ class DDPG_Agent():
         current_Q = self.critic_local(states, actions)
         assert(current_Q.requires_grad == True)
 
-        # gradient clipping
-        critic_loss = ((target_Q - current_Q)**2).mean()
+        critic_loss = F.mse_loss(current_Q, target_Q) #mean squared error
 
-        # critic backward prop
-        self.critic_optim.zero_grad()
-        critic_loss.backward()
-        if self.t_step > GRAD_CLIP_START:
-            U.clip_grad_norm_(self.critic_local.parameters(), GRAD_CLIP_MAX)
-        # update the parameters
-        self.critic_optim.step()
+        self.critic_optim.zero_grad() # reset grad parameters
+        critic_loss.backward() # critic backward prop
+        U.clip_grad_norm_(self.critic_local.parameters(), GRAD_CLIP_MAX)
+        self.critic_optim.step() # update the parameters
 
         #tracking:
-        self.td_history.append(critic_loss.detach().mean())
+        self.td_history.append(critic_loss.detach())
 
-        ######################## COMPUTE ACTOR LOSS ########################
+        ######################## ACTOR LOSS ########################
         actor_loss = -self.critic_local(states, self.actor_local(states)).mean()
-        # critic backward prop
-        self.actor_optim.zero_grad()
-        actor_loss.backward()
-        if self.t_step > GRAD_CLIP_START:
-            U.clip_grad_norm_(self.actor_local.parameters(), GRAD_CLIP_MAX)
-        # update the parameters
-        self.actor_optim.step()
+        self.actor_optim.zero_grad() # reset grad parameters
+        actor_loss.backward() # actor backward prop starts
+        U.clip_grad_norm_(self.actor_local.parameters(), GRAD_CLIP_MAX)
+        self.actor_optim.step() # update the parameters
 
         #tracking:
         self.Q_history.append(-actor_loss.detach())
@@ -208,7 +218,7 @@ class DDPG_Agent():
         return sum(self.Q_history)/len(self.Q_history)
 
     def get_noise_avg(self):
-        return sum(self.noise_history)/len(self.noise_history)
+        if self.add_noise: return sum(self.noise_history)/len(self.noise_history)
 
     def get_td_avg(self):
         return sum(self.td_history)/len(self.td_history)
@@ -242,12 +252,13 @@ class ReplayBuffer:
                                      "reward", "next_state", "done"])
         self.seed = random.seed(seed)
 
+
     def add(self, state, action, reward, next_state, done):
         """Add a new experience to memory.
-        state: torch, shape: 1 x state_space
-        action: torch, shape: 1 x action_space
+        state: (torch) shape: 1,state_space
+        action: (torch) shape: 1,action_space
         reward: float
-        next_state: torch, shape: 1 x state_space
+        next_state: (torch) shape: 1,state_space
         done: bool
         """
         #reward clipping
@@ -266,23 +277,23 @@ class ReplayBuffer:
 
         # get the selected experiences: avoid using mid list indexing
         es, ea, er, en, ed = [], [], [], [], []
-        #ea = torch.zeros([self.batch_size,self.action_space])
-        for i in range(len(sample_ind)):
+
+        i = 0
+        while i < len(sample_ind): #while loop is faster
             self.memory.rotate(-sample_ind[i])
             e = self.memory[0]
             es.append(e.state)
-            #ea[i,:] = e.action
             ea.append(e.action)
             er.append(e.reward)
             en.append(e.next_state)
             ed.append(e.done)
             self.memory.rotate(sample_ind[i])
+            i += 1
 
-        states = torch.from_numpy(np.vstack(es)).float().to(device)
-        actions = torch.from_numpy(np.vstack(ea)).float().to(device)
-        #actions = ea.float().to(device)
+        states = torch.stack(es).squeeze().float().to(device)
+        actions = torch.stack(ea).float().to(device)
         rewards = torch.from_numpy(np.vstack(er)).float().to(device)
-        next_states = torch.from_numpy(np.vstack(en)).float().to(device)
+        next_states = torch.stack(en).squeeze().float().to(device)
         dones = torch.from_numpy(np.vstack(ed).astype(np.uint8)).float().to(device)
 
         return (states, actions, rewards, next_states, dones)
