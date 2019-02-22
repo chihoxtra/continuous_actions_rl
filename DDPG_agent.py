@@ -13,7 +13,7 @@ from DDPG_models import Critic_Net, Actor_Net
 change log:
     for 20 agents:
     - batch size: working 128
-    - update loop: working 20
+    - update loop: working 20 test 20
     - lr: working 1e-4
     for single agent:
     - batch size: working 128 test 128
