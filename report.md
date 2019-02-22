@@ -23,7 +23,7 @@ Here are a summary of the hyper parameters used:
 <table width=600>
 <tr><td>Memory buffer size  </td><td> 1e6    </td></tr>     
 <tr><td>REPLAY_MIN_SIZE  </td><td>  1e5   </td></tr>
-<tr><td>Gamme  </td><td> 0.99    </td></tr>               
+<tr><td>Gamma  </td><td> 0.99    </td></tr>               
 <tr><td>Tau (soft update)  </td><td> 1e-3          </td></tr>           
 <tr><td>Learning Rate  </td><td>  1e-4  </td></tr>
 <tr><td>update target network frequency  </td><td> 2    </td></tr>
@@ -31,7 +31,7 @@ Here are a summary of the hyper parameters used:
 </table>
 
 #### The Result:
-After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 30 (per episode) across all 20 agents. <P>
+After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 30 (per episode) across all 20 agents over last 100 episodes at around episode 100th (the reason is that the agent is able to maintain a score of over 38 for around 60+ episodes and so after reaching 100 episodes, the average score is still greater than 30). <P>
 Average Reward across 20 agents across episodes<br>
 ![Average Reward across 20 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/graph.png)
 
