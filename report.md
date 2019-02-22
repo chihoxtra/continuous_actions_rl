@@ -1,5 +1,5 @@
 
-# Key Learnings on Implementing DDQN for Unity Reacher Environment
+## Key Learnings on Implementing DDQN for Unity Reacher Environment
 
 ### Implementation Details
 
@@ -31,8 +31,8 @@ Here are a summary of the hyper parameters used:
 </table>
 
 #### The Result:
-After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of 13 within 653 training episodes. <P>
-Reward Plot with double network<br>
+After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 30 (per episode) across all 20 agents. <P>
+Average Reward across 20 agents across episodes<br>
 ![Average Reward across 20 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/graph.png)
 
 #### Future Ideas:
