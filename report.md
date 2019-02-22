@@ -21,8 +21,8 @@ Ultimately, successful training depends on the balance between these 2 network. 
 #### Hyper Parameters chosen:
 Here are a summary of the hyper parameters used:
 <table width=600>
-<tr><td>Memory buffer size  </td><td> 1e5    </td></tr>     
-<tr><td>REPLAY_MIN_SIZE  </td><td>  int(1e5)   </td></tr>
+<tr><td>Memory buffer size  </td><td> 1e6    </td></tr>     
+<tr><td>REPLAY_MIN_SIZE  </td><td>  1e5   </td></tr>
 <tr><td>Gamme  </td><td> 0.99    </td></tr>               
 <tr><td>Tau (soft update)  </td><td> 1e-3          </td></tr>           
 <tr><td>Learning Rate  </td><td>  1e-4  </td></tr>
