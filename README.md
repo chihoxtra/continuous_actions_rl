@@ -1,6 +1,6 @@
 [//]: # (Image References)
 
-[image1]: http://oi634.photobucket.com/albums//uu63//chihoxtra//reacher_final_20agents_38score_zpsks9w18yb.gif "Trained Agent"
+[image1]: http://i634.photobucket.com/albums/uu63/chihoxtra/reacher_final_20agents_38score_zpsks9w18yb.gif "Trained Agent"
 
 # Continuous Control for Unity Reacher Environment
 

@@ -35,6 +35,10 @@ After soooooo many different trial and errors, I am glad that I am finally able 
 Average Reward across 20 agents across episodes<br>
 ![Average Reward across 20 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/graph.png)
 
+![Trained Agent Capture](http://i634.photobucket.com/albums/uu63/chihoxtra/reacher_final_20agents_38score_zpsks9w18yb.gif)
+
+[Video of the trained agent](https://youtu.be/hlC8Ttg320c)
+
 #### Future Ideas:
 - Implementation of prioritized replay for faster learning
 - Use PPO (actor critic style) instead of DDPG as it is known to provide even better result.
