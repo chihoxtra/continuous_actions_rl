@@ -79,12 +79,13 @@ class PPO_ActorCritic(nn.Module):
 
         # proposed action
         a_mean = torch.tanh(self.fc_4a(s))
-        a_scaled = (self.action_high-self.action_low)/a_mean + self.action_low
+        #a_scaled = (self.action_high-self.action_low)/a_mean + self.action_low
 
         # base on the action as mean create a distribution with zero std...
-        dist = torch.distributions.Normal(a_scaled, F.softplus(self.std))
+        dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
+
         # sample from the prob distribution again
-        if resampled_action==None:
+        if resampled_action is None:
             resampled_action = dist.sample()
 
         # log( p(a|s) ), batchsize, 1
