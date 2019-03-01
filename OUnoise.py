@@ -10,7 +10,7 @@ https://github.com/xkiwilabs/Multi-Agent-DDPG-using-PTtorch-and-ML-Agents/blob/m
 class OUnoise:
     """Ornstein-Uhlenbeck process."""
 
-    def __init__(self, size, seed, mu=0.0, theta=0.15, sigma=.25, sigma_min=0.05, sigma_decay=.99):
+    def __init__(self, size, seed, mu=0.0, theta=0.15, sigma=.2, sigma_min=0.05, sigma_decay=.99):
         """Initialize parameters and noise process."""
         self.mu = mu * np.ones(size)
         self.theta = theta

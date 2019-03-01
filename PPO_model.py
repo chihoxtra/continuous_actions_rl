@@ -21,7 +21,7 @@ class PPO_ActorCritic(nn.Module):
 
     def __init__(self, state_space, action_space, device, seed=0,
                  action_high=1.0, action_low=-1.0,
-                 hidden_layer1=1024, hidden_layer2=256, hidden_layer3=64):
+                 hidden_layer1=1024, hidden_layer2=128, hidden_layer3=64):
         """Initialize parameters and build model.
         Key Params
         ======
@@ -47,7 +47,7 @@ class PPO_ActorCritic(nn.Module):
         self.fc_1c = nn.Linear(state_space, hidden_layer1)
         self.bn_1c = nn.BatchNorm1d(hidden_layer1) #batch norm for stability
         self.fc_2c = nn.Linear(hidden_layer1, hidden_layer2)
-        self.bn_2c = nn.BatchNorm1d(hidden_layer2) #batch norm for stability
+        #self.bn_2c = nn.BatchNorm1d(hidden_layer2) #batch norm for stability
 
         # for actor network (state->action)
         self.fc_4a = nn.Linear(hidden_layer2, action_space)
@@ -58,27 +58,30 @@ class PPO_ActorCritic(nn.Module):
         # for converting tanh value to prob
         self.std = nn.Parameter(torch.zeros(action_space))
 
+        self.to(device)
+
         self.reset_parameters()
 
     def reset_parameters(self):
         # initialize the values
         self.fc_1c.weight.data.uniform_(*weights_init_by_std(self.fc_1c))
         self.fc_2c.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
-        self.fc_4a.weight.data.uniform_(*weights_init_by_std(self.fc_4a))
-        self.fc_4v.weight.data.uniform_(*weights_init_by_std(self.fc_4v))
+        self.fc_4a.weight.data.uniform_(-3e-3, 3e-3)
+        self.fc_4v.weight.data.uniform_(-3e-3, 3e-3)
 
     def forward(self, s, resampled_action=None):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # common network
         s = F.relu(self.bn_1c(self.fc_1c(s)))
-        s = F.relu(self.bn_2c(self.fc_2c(s))) #-> action/critic streams
+        s = F.relu(self.fc_2c(s)) #-> action/critic streams
 
         # td Q value
         v = self.fc_4v(s)
 
         # proposed action
         a_mean = torch.tanh(self.fc_4a(s))
+
         #a_scaled = (self.action_high-self.action_low)/a_mean + self.action_low
 
         # base on the action as mean create a distribution with zero std...
