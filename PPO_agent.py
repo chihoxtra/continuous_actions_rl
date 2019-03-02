@@ -12,19 +12,20 @@ from PPO_model import PPO_ActorCritic
 change log and learning notes:
 - for critic loss, using target network doesnt seem to work well
 - latest use 1 step td target as target; td error as advantage
+- working: 512, 128; batch size 512, update loop 4
 """
 
 ##### CONFIG PARMAS #####
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
-BATCH_SIZE = 1024             # batch size of sampling
-MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
+BATCH_SIZE = 512              # batch size of sampling
+MIN_BUFFER_SIZE = int(1e4)    # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
 T_MAX = 100                   # max number of time step
 LR = 1e-4                     # learning rate #5e4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
-MSE_L_WEIGHT = 1.0            # mean square error term weight
+CRITIC_L_WEIGHT = 0.8         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
-ENT_DECAY = 0.9995            # decay of entropy per 'step'
+ENT_DECAY = 0.9999            # decay of entropy per 'step'
 ENT_MIN = 1e-4                # min weight of entropy
 LEARNING_LOOP = 4             # no of update on grad per step
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
@@ -63,8 +64,8 @@ class PPO_Agent():
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_size, action_size, device, seed).to(device)
-        self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
-        #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, eps=1e-5)
+        #self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
+        self.optim = optim.Adam(self.model_local.parameters(), lr=LR, eps=1e-5)
 
         # Noise handling
         self.noise = OUnoise((num_agents, action_size), seed)
@@ -216,7 +217,7 @@ class PPO_Agent():
                 self.learn(sampled_data) #learn from it and update grad
 
             # entropy weight decay
-            #self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
+            self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
 
 
     def learn(self, m_batch):
@@ -267,7 +268,7 @@ class PPO_Agent():
         self.critic_loss.append(critic_loss.data.detach().numpy())
 
         # TOTAL LOSS
-        total_loss = actor_loss + MSE_L_WEIGHT*critic_loss
+        total_loss = actor_loss + CRITIC_L_WEIGHT * critic_loss
 
         self.optim.zero_grad()
         total_loss.backward() #retain_graph=True
