@@ -15,19 +15,23 @@ change log and learning notes:
 """
 
 ##### CONFIG PARMAS #####
-BUFFER_SIZE = int(1e6)        # buffer size of memory storage
-BATCH_SIZE = 64               # batch size of sampling
-MIN_BUFFER_SIZE = int(1e2)    # min buffer size before learning starts
-GAMMA = 0.99                  # discount factor
-#TAU = 1e-3                   # for soft update of target parameters
-T_MAX = 1000                  # max number of time step
+BUFFER_SIZE = int(1e5)        # buffer size of memory storage
+BATCH_SIZE = 1024             # batch size of sampling
+MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
+GAMMA = 0.95                  # discount factor
+TAU = 1e-3                    # for soft update of target parameters
+T_MAX = 100                   # max number of time step
 LR = 1e-4                     # learning rate #5e4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
-ENT_WEIGHT = 0.00             # weight of entropy added
-LEARNING_LOOP = 1             # no of update on grad per step
-#UPDATE_EVERY = 2             # how often to update the network
+MSE_L_WEIGHT = 1.0            # mean square error term weight
+ENT_WEIGHT = 0.1              # weight of entropy added
+MIN_ENTROPY = 1e-4            # min weight of entropy
+LEARNING_LOOP = 2             # no of update on grad per step
+UPDATE_EVERY = 4              # how often to update the network
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
-ADD_NOISE = True              # add noise when interacting with the env
+ADD_NOISE = False             # add noise when interacting with the env
+USE_GAE = False               # use GAE flag
+GAE_TAU = 0.95                # value control how much agent rely on current estimate
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -51,10 +55,12 @@ class PPO_Agent():
         self.num_agents = num_agents
         self.seed = random.seed(seed)
         self.gamma = GAMMA # discount rate
+        self.ent_weight = ENT_WEIGHT
         self.t_max = T_MAX # max number of steps for episodic exploration
 
         # Replay memory
-        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, action_space, seed)
+        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, action_space,
+                                   num_agents,seed)
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
@@ -75,13 +81,15 @@ class PPO_Agent():
         self.r_history = deque(maxlen=50000)
 
         # for tracking
-        self.critic_loss = 0.0
-        self.actor_gain = 0.0
+        self.critic_loss = deque(maxlen=100)
+        self.actor_gain = deque(maxlen=100)
 
         # training or just accumulating experience?
         self.is_training = False
 
         print("current device: ", device)
+
+
 
     def _toTorch(self, s, dtype=torch.float32):
         return torch.tensor(s, dtype=dtype, device=device)
@@ -95,7 +103,7 @@ class PPO_Agent():
         """
         Collect trajectory data and store them
         output: tuple of list (len: len(states)) of:
-                states, log_probs, rewards, As, Vs
+                states, log_probs, actions, rewards, As, TDs
         """
         # for keeping track of CURRENT running rewards
         self.running_rewards = np.zeros(self.num_agents)
@@ -105,11 +113,11 @@ class PPO_Agent():
         env_info = self.env.reset(train_mode=train_mode)[brain_name] # reset env
 
         # len of these var could vary depends on length of episode
-        s = [] #list of array: @ num_agents x state_space
+        s = [] #list of tensor: @ num_agents x state_space
         p = [] #list of tensor: num_agents x 1, requires grad
         a = [] #list of array: num_agents x action_space
         r = [] #list of array of float @ len = num_agents
-        ns = [] #list of array: @ num_agents x state_space
+        ns = [] #list of tensor: @ num_agents x state_space
         d = [] #list of array: @ num_agents x 1
         A = [] #list of array of advantage value @ num_agents x 1
         V = [] #list of tensor: @ each num_agents x 1, requires grad
@@ -137,12 +145,12 @@ class PPO_Agent():
 
             self.running_rewards += np.array(reward) # accumulate running reward
 
-            s.append(state) #array: num_agents x state_space (129)
+            s.append(self._toTorch(state)) #tensor: num_agents x state_space (129)
             p.append(state_predict['log_prob']) #tensor: num_agents x 1, require grad
             a.append(state_predict['a']) #np.array: num_agents x action_space
-            r.append(np.array(reward)) #array: num_agents x 1
-            ns.append(next_state) #array: num_agents x state_space (129)
-            d.append(np.array(done)) #array: num_agents x 1
+            r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
+            ns.append(self._toTorch(next_state)) #array: num_agents x state_space (129)
+            d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
             V.append(state_predict['v']) #Q value tensor: num_agents x 1, require grad
 
             state = next_state
@@ -161,23 +169,29 @@ class PPO_Agent():
 
         # use td target as return, td error as advantage
         V.append(last_state_predict['v']) #range(ep_len) > len(V) by 1 as last state is added
+
+        advantage = np.zeros([self.num_agents, 1])
         td_target = last_state_predict['v'].detach().numpy()
         for i in reversed(range(ep_len)):
-            td_target = r[i].reshape(-1,1)+GAMMA*(1-d[i]).reshape(-1,1)*td_target
-            advantage = td_target - V[i].detach().numpy()
-            A.append(advantage)
-            td.append(td_target)
+            td_target = r[i] + GAMMA*(1-d[i])*td_target
+            if not USE_GAE:
+                advantage = td_target - V[i].detach().numpy()
+            else:
+                td_error = r[i] + GAMMA*(1-d[i])*V[i+1].detach().numpy() - V[i].detach().numpy()
+                advantage = advantage * GAE_TAU * GAMMA * (1-d[i]) + td_error
+            A.append(advantage) #array:, num_agents x 1
+            td.append(td_target) #array:, num_agents x 1
 
         # reverse back the list
         A = [a for a in reversed(A)]
         td = [td_i for td_i in reversed(td)]
 
         # normalize Advantage and tds
-        #A = [(a-np.mean(A))/np.std(A) for a in A]
-        #td = [(t-np.mean(td))/np.std(td) for t in td]
+        A = [(a-np.mean(A))/np.std(A) for a in A]
+        td = [(t-np.mean(td))/np.std(td) for t in td]
 
         # store data in memory
-        data = (s, p, a, r, d, ns, A, td)
+        data = (s, p, a, r, A, td)
         self.memory.add(data)
 
         return
@@ -188,7 +202,7 @@ class PPO_Agent():
 
         self.collect_data(eps)
 
-        if len(self.memory) >= self.num_agents * MIN_BUFFER_SIZE:
+        if len(self.memory) >= MIN_BUFFER_SIZE:
             if self.is_training == False:
                 print("")
                 print("Prefetch completed. Training starts! \r")
@@ -200,9 +214,11 @@ class PPO_Agent():
                 sampled_data = self.memory.sample() #sample from memory
                 self.learn(sampled_data) #learn from it and update grad
 
-            #if self.t_step % UPDATE_EVERY == 0:
-            #    # ------------------- update target network ------------------- #
-            #    self._soft_update(self.model_local, self.model_target, TAU)
+            if self.t_step % UPDATE_EVERY == 0:
+                # ------------------- update target network ------------------- #
+                self._soft_update(self.model_local, self.model_target, TAU)
+
+            self.ent_weight = max(self.ent_weight * 0.995, MIN_ENTROPY)
 
 
     def learn(self, m_batch):
@@ -211,75 +227,55 @@ class PPO_Agent():
         Params
         ======
         inputs:
-            data_batch: (tuple) of:
-                batch of states: (tensor) batch_size x num_agents x state_space
-                batch of old_probs: (tensor) batch_size x num_agents x 1
-                batch of actions: (tensor) batch_size x num_agents x action_space
-                batch of rewards: (tensor) batch_size x num_agents x 1
-                batch of As: (tensor) batch_size x num_agents x 1
-                batch of Returns: (tensor) batch_size x num_agents x 1
+            m_batch: (tuple) of:
+                batch of states: (tensor) batch_size or num_agents x state_space
+                batch of old_probs: (tensor) batch_size or num_agents x 1
+                batch of actions: (tensor) batch_size or num_agents x action_space
+                batch of rewards: (tensor) batch_size or num_agents x 1
+                batch of Advantages: (tensor) batch_size or num_agents x 1
+                batch of Returns/TDs: (tensor) batch_size or num_agents x 1
         """
-        s, p, a, r, d, ns, A, td = m_batch
+        s, p, a, r, A, td = m_batch
+        #print(s.shape, p.shape, a.shape, r.shape, A.shape, td.shape)
 
-        i = 0
-        while i < BATCH_SIZE:
-            s_i = s[i,:,:] # num_agent x state_space
-            p_i = p[i,:] # num_agent x 1, requires grad
-            p_a = a[i,:] # num_agent x action_space, no grad
-            r_i = r[i,:] # num_agent x 1
-            #d_i = d[i,:] # num_agent x 1
-            #ns_i = ns[i,:,:] # num_agent x state_space
-            A_i = A[i,:] # num_agent x 1, no grad
-            #V_i = V[i,:] # num_agent x 1, requires grad
-            td_i = td[i,:] # num_agent x 1, no grad
+        old_prob = p.detach() # num_agents, no grad
+        s_predictions = self.model_local(s, a) #use old s, a to get new prob
+        new_prob = s_predictions['log_prob'] # num_agents x 1
+        assert(new_prob.requires_grad == True)
+        assert(A.requires_grad == False)
 
-            old_prob = p_i.detach() # num_agents, no grad
-            s_predictions = self.model_local(s_i, p_a) #use old s, a to get new prob
-            new_prob = s_predictions['log_prob'] # num_agents x 1
-            assert(new_prob.requires_grad == True)
-            assert(A_i.requires_grad == False)
+        #ACTOR LOSS
+        ratio = (new_prob - old_prob).exp() # # num_agent or m x 1
+        #ratio = new_prob/old_prob # num_agent or m x 1
 
-            #ACTOR LOSS
-            #ratio = (new_prob - old_prob).exp() # num_agents x 1
-            ratio = new_prob/old_prob #num_agentsx1 / num_agentsx1
+        G = ratio * A
 
-            G = ratio * A_i
+        G_clipped = torch.clamp(ratio, 1.+P_RATIO_EPS, 1.-P_RATIO_EPS) * A
 
-            G_clipped = torch.clamp(ratio, 1.+P_RATIO_EPS, 1.-P_RATIO_EPS) * A_i
+        G_ = torch.min(G, G_clipped) + ENT_WEIGHT * s_predictions['ent']
 
-            G_ = torch.min(G, G_clipped) + ENT_WEIGHT*s_predictions['ent'] # num_agent x 1
+        actor_loss = -torch.mean(G_)
 
-            actor_loss = -torch.mean(G_)
+        self.actor_gain.append(-actor_loss.data.detach().numpy())
 
-            self.actor_gain = -actor_loss
+        #CRITIC LOSS
+        td_current = s_predictions['v'] # # num_agent or m x 1, requires grad
+        assert(td_current.requires_grad == True)
 
-            #CRITIC LOSS
-            td_current = s_predictions['v'] # num_agent x 1, requires grad
-            assert(td_current.requires_grad == True)
+        td_target = td
 
-            #ns_predictions = self.model_target(ns_i)
-            #td_target = r_i + GAMMA * (1-d_i) * ns_predictions['v']
-            #td_target = td_target.detach() # num_agent x 1, no grad
+        critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
 
-            td_target = td_i
+        self.critic_loss.append(critic_loss.data.detach().numpy())
 
-            #critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
-            huber_loss = torch.nn.SmoothL1Loss()
-            #critic_loss = huber_loss(td_current, td_target)
-            critic_loss = 0.5 * (td_i - td_current).pow(2).mean()
+        # TOTAL LOSS
+        total_loss = actor_loss + MSE_L_WEIGHT*critic_loss
 
-            self.critic_loss = critic_loss
+        self.optim.zero_grad()
+        total_loss.backward() #retain_graph=True
+        U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
+        self.optim.step()
 
-            # total loss
-            loss = actor_loss + critic_loss
-
-            self.optim.zero_grad()
-            loss.backward()
-            U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
-            self.optim.step()
-            i += 1
-
-            del loss
 
 
     def _soft_update(self, local_model, target_model, tau):
@@ -299,7 +295,7 @@ class PPO_Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, buffer_size, batch_size, action_space, seed=0):
+    def __init__(self, buffer_size, batch_size, action_space, num_agents, seed=0):
         """Data Structure to store experience object.
         Params
         ======
@@ -311,11 +307,12 @@ class ReplayBuffer:
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
         self.action_space = action_space
+        self.num_agents = num_agents
 
         # data structure for
         self.data = namedtuple("data", field_names=["states", "old_probs",
                                                     "actions", "rewards",
-                                                    "dones", "next_states",
+                                                    #"dones", "next_states",
                                                     "As", "returns"])
         self.seed = random.seed(seed)
 
@@ -324,11 +321,18 @@ class ReplayBuffer:
         """ Add a new experience to memory.
             data: (tuple) states, log_probs, rewards, As, Vs
         """
-        (s, p, a, r, d, ns, A, td) = single_traj_data #equal lengths
+        (s_, p_, a_, r_, A_, td_) = single_traj_data #equal lengths
 
-        for i in range(len(A)):
-            e = self.data(s[i], p[i], a[i], r[i], d[i], ns[i], A[i], td[i])
-            self.memory.append(e)
+        #for i in range(len(A)):
+        #    e = self.data(s[i], p[i], a[i], r[i], A[i], td[i])
+        #    self.memory.append(e)
+
+        for s, p, a, r, A, td in zip(s_, p_, a_, r_, A_, td_): #by time step
+            i = 0
+            while i < self.num_agents: #by agent
+                e = self.data(s[i,:], p[i,:], a[i,:], r[i], A[i], td[i])
+                self.memory.append(e)
+                i += 1
 
 
     def sample(self):
@@ -337,35 +341,35 @@ class ReplayBuffer:
         sample_ind = np.random.choice(len(self.memory), self.batch_size)
 
         # get the selected experiences: avoid using mid list indexing
-        s_s, s_p, s_a, s_r, s_d, s_ns, s_A, s_rt = [], [], [], [], [], [], [], []
+        s_s, s_p, s_a, s_r, s_A, s_rt = [], [], [], [], [], []
 
         i = 0
         while i < len(sample_ind): #while loop is faster
             self.memory.rotate(-sample_ind[i])
+
             e = self.memory[0]
             s_s.append(e.states)
             s_p.append(e.old_probs)
             s_a.append(e.actions)
             s_r.append(e.rewards)
-            s_d.append(e.dones)
-            s_ns.append(e.next_states)
+            #s_d.append(e.dones)
+            #s_ns.append(e.next_states)
             s_A.append(e.As)
             s_rt.append(e.returns)
             self.memory.rotate(sample_ind[i])
             i += 1
 
         # change the format to tensor and make sure dims are correct for calculation
-        s_s = torch.from_numpy(np.stack(s_s)).float().to(device)
+        s_s = torch.stack(s_s).float().to(device)
         s_p = torch.stack(s_p).to(device)
         s_a = torch.from_numpy(np.stack(s_a)).float().to(device)
-        s_r = torch.from_numpy(np.vstack(s_r)).unsqueeze(-1).float().to(device)
-        s_d = torch.from_numpy(1.*np.vstack(s_d)).unsqueeze(-1).float().to(device)
-        s_ns = torch.from_numpy(np.stack(s_ns)).float().to(device)
+        s_r = torch.from_numpy(np.vstack(s_r)).float().to(device)
+        #s_d = torch.from_numpy(1.*np.vstack(s_d)).float().to(device)
+        #s_ns = torch.stack(s_ns).float().to(device)
         s_A = torch.from_numpy(np.stack(s_A)).float().to(device)
-        #s_V = torch.stack(s_V).to(device)
         s_rt = torch.from_numpy(np.stack(s_rt)).float().to(device)
 
-        return (s_s, s_p, s_a, s_r, s_d, s_ns, s_A, s_rt)
+        return (s_s, s_p, s_a, s_r, s_A, s_rt)
 
     def __len__(self):
         """Return the current size of internal memory."""

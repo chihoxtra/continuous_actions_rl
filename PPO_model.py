@@ -21,7 +21,7 @@ class PPO_ActorCritic(nn.Module):
 
     def __init__(self, state_space, action_space, device, seed=0,
                  action_high=1.0, action_low=-1.0,
-                 hidden_layer1=1024, hidden_layer2=128, hidden_layer3=64):
+                 hidden_layer1=512, hidden_layer2=128, hidden_layer3=64):
         """Initialize parameters and build model.
         Key Params
         ======
@@ -44,10 +44,10 @@ class PPO_ActorCritic(nn.Module):
 
         # input size: batch_size, state_space
         # common shared network
+        self.bn_1c = nn.BatchNorm1d(state_space) #batch norm for stability
         self.fc_1c = nn.Linear(state_space, hidden_layer1)
-        self.bn_1c = nn.BatchNorm1d(hidden_layer1) #batch norm for stability
+        self.bn_2c = nn.BatchNorm1d(hidden_layer1) #batch norm for stability
         self.fc_2c = nn.Linear(hidden_layer1, hidden_layer2)
-        #self.bn_2c = nn.BatchNorm1d(hidden_layer2) #batch norm for stability
 
         # for actor network (state->action)
         self.fc_4a = nn.Linear(hidden_layer2, action_space)
@@ -66,14 +66,15 @@ class PPO_ActorCritic(nn.Module):
         # initialize the values
         self.fc_1c.weight.data.uniform_(*weights_init_by_std(self.fc_1c))
         self.fc_2c.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
-        self.fc_4a.weight.data.uniform_(-3e-3, 3e-3)
-        self.fc_4v.weight.data.uniform_(-3e-3, 3e-3)
+        self.fc_4a.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
+        self.fc_4v.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
 
     def forward(self, s, resampled_action=None):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # common network
-        s = F.relu(self.bn_1c(self.fc_1c(s)))
+        s = self.bn_1c(s)
+        s = F.relu(self.bn_2c(self.fc_1c(s)))
         s = F.relu(self.fc_2c(s)) #-> action/critic streams
 
         # td Q value
@@ -81,8 +82,6 @@ class PPO_ActorCritic(nn.Module):
 
         # proposed action
         a_mean = torch.tanh(self.fc_4a(s))
-
-        #a_scaled = (self.action_high-self.action_low)/a_mean + self.action_low
 
         # base on the action as mean create a distribution with zero std...
         dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
@@ -94,6 +93,7 @@ class PPO_ActorCritic(nn.Module):
         # log( p(a|s) ), batchsize, 1
         log_prob = dist.log_prob(resampled_action).sum(-1).unsqueeze(-1)
         entropy = dist.entropy().sum(-1).unsqueeze(-1)
+        #print(log_prob, entropy)
 
         pred = {'log_prob': log_prob, # prob dist based on actions generated, grad true,  (num_agents, 1)
                 'a_mean': a_mean.detach().cpu().numpy(), #original action by network (num_agents,action_space)
@@ -101,6 +101,5 @@ class PPO_ActorCritic(nn.Module):
                 'ent': entropy, #for noise, grad true, (num_agents, 1)
                 'v': v #Q value (num_agents,1)
                 }
-
         # final output
         return pred
