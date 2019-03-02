@@ -19,14 +19,14 @@ BUFFER_SIZE = int(1e5)        # buffer size of memory storage
 BATCH_SIZE = 1024             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.95                  # discount factor
-TAU = 1e-3                    # for soft update of target parameters
+#TAU = 1e-3                    # for soft update of target parameters
 T_MAX = 100                   # max number of time step
 LR = 1e-4                     # learning rate #5e4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
 MSE_L_WEIGHT = 1.0            # mean square error term weight
 ENT_WEIGHT = 0.1              # weight of entropy added
 MIN_ENTROPY = 1e-4            # min weight of entropy
-LEARNING_LOOP = 2             # no of update on grad per step
+#LEARNING_LOOP = 2             # no of update on grad per step
 UPDATE_EVERY = 4              # how often to update the network
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
 ADD_NOISE = False             # add noise when interacting with the env
@@ -64,7 +64,7 @@ class PPO_Agent():
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
-        self.model_target = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
+        #self.model_target = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
         self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
         #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, eps=1e-5)
 
@@ -197,12 +197,15 @@ class PPO_Agent():
         return
 
 
-    def step(self, eps=0.99):
-        """ a step of collecting, sampling data and learn from it """
+    def step(self, eps=0.99, train_mode=True):
+        """ a step of collecting, sampling data and learn from it
+            eps: for exploration if external noise is added
+            train_mode: for the env 
+        """
 
-        self.collect_data(eps)
+        self.collect_data(eps=eps, train_mode=train_mode)
 
-        if len(self.memory) >= MIN_BUFFER_SIZE:
+        if train_mode and len(self.memory) >= MIN_BUFFER_SIZE:
             if self.is_training == False:
                 print("")
                 print("Prefetch completed. Training starts! \r")
@@ -214,9 +217,9 @@ class PPO_Agent():
                 sampled_data = self.memory.sample() #sample from memory
                 self.learn(sampled_data) #learn from it and update grad
 
-            if self.t_step % UPDATE_EVERY == 0:
-                # ------------------- update target network ------------------- #
-                self._soft_update(self.model_local, self.model_target, TAU)
+            #if self.t_step % UPDATE_EVERY == 0:
+            #    # ------------------- update target network ------------------- #
+            #    self._soft_update(self.model_local, self.model_target, TAU)
 
             self.ent_weight = max(self.ent_weight * 0.995, MIN_ENTROPY)
 

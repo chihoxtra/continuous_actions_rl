@@ -12,11 +12,11 @@ class PPO_ActorCritic(nn.Module):
     """
         PPO Actor Critic Network.
         2 Parts:
-        1) Policy: input state (array), convert into action. Based on that
+        1) Actor: input state (array), convert into action. Based on that
                    action create a prob distribution. Based on that distribution
                    resample another action. Output the resampled action and prob dist
-        2) Value: input a state and output a Q value (no action assoicated)
-                  The Q value is used to calculate advantage score.
+        2) Critic: input a state and output a Q value (action is implicit)
+                   The Q value is used to calculate advantage score and td value.
     """
 
     def __init__(self, state_space, action_space, device, seed=0,
@@ -80,26 +80,25 @@ class PPO_ActorCritic(nn.Module):
         # td Q value
         v = self.fc_4v(s)
 
-        # proposed action
+        # proposed action, we will then use this action as mean to generate
+        # a prob distribution to output log_prob
         a_mean = torch.tanh(self.fc_4a(s))
 
         # base on the action as mean create a distribution with zero std...
         dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
 
-        # sample from the prob distribution again
+        # sample from the prob distribution just generated again
         if resampled_action is None:
             resampled_action = dist.sample()
 
-        # log( p(a|s) ), batchsize, 1
+        # then we have log( p(resampled_action | state) ): batchsize, 1
         log_prob = dist.log_prob(resampled_action).sum(-1).unsqueeze(-1)
-        entropy = dist.entropy().sum(-1).unsqueeze(-1)
-        #print(log_prob, entropy)
+        entropy = dist.entropy().sum(-1).unsqueeze(-1) #entropy for noise
 
         pred = {'log_prob': log_prob, # prob dist based on actions generated, grad true,  (num_agents, 1)
-                'a_mean': a_mean.detach().cpu().numpy(), #original action by network (num_agents,action_space)
                 'a': resampled_action.detach().cpu().numpy(), #sampled action based on prob dist (num_agents,action_space)
-                'ent': entropy, #for noise, grad true, (num_agents, 1)
-                'v': v #Q value (num_agents,1)
+                'ent': entropy, #for noise, grad true, (num_agents or m, 1)
+                'v': v #Q score, state's V value (num_agents or m,1)
                 }
         # final output
         return pred
