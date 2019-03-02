@@ -18,18 +18,17 @@ change log and learning notes:
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
 BATCH_SIZE = 1024             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
-GAMMA = 0.95                  # discount factor
-#TAU = 1e-3                    # for soft update of target parameters
+GAMMA = 0.99                  # discount factor
 T_MAX = 100                   # max number of time step
 LR = 1e-4                     # learning rate #5e4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
 MSE_L_WEIGHT = 1.0            # mean square error term weight
-ENT_WEIGHT = 0.1              # weight of entropy added
-MIN_ENTROPY = 1e-4            # min weight of entropy
-#LEARNING_LOOP = 2             # no of update on grad per step
-UPDATE_EVERY = 4              # how often to update the network
+ENT_WEIGHT = 0.01             # weight of entropy added
+ENT_DECAY = 0.9995            # decay of entropy per 'step'
+ENT_MIN = 1e-4                # min weight of entropy
+LEARNING_LOOP = 4             # no of update on grad per step
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
-ADD_NOISE = False             # add noise when interacting with the env
+USE_OUNOISE = False           # add noise when interacting with the env
 USE_GAE = False               # use GAE flag
 GAE_TAU = 0.95                # value control how much agent rely on current estimate
 
@@ -39,7 +38,7 @@ device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 class PPO_Agent():
     """Interacts with and learns from the environment."""
 
-    def __init__(self, env, state_space, action_space, num_agents=12, seed=0):
+    def __init__(self, env, state_size, action_size, num_agents=12, seed=0):
         """Initialize an Agent object.
         Params
         ======
@@ -50,8 +49,8 @@ class PPO_Agent():
             seed (int): random seed
         """
         self.env = env
-        self.state_space = state_space
-        self.action_space = action_space
+        self.state_size = state_size
+        self.action_size = action_size
         self.num_agents = num_agents
         self.seed = random.seed(seed)
         self.gamma = GAMMA # discount rate
@@ -59,17 +58,16 @@ class PPO_Agent():
         self.t_max = T_MAX # max number of steps for episodic exploration
 
         # Replay memory
-        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, action_space,
+        self.memory = ReplayBuffer(BUFFER_SIZE, BATCH_SIZE, action_size,
                                    num_agents,seed)
 
         # Init Network Models and Optimizers
-        self.model_local = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
-        #self.model_target = PPO_ActorCritic(state_space, action_space, device, seed).to(device)
+        self.model_local = PPO_ActorCritic(state_size, action_size, device, seed).to(device)
         self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
         #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, eps=1e-5)
 
         # Noise handling
-        self.noise = OUnoise((num_agents, action_space), seed)
+        self.noise = OUnoise((num_agents, action_size), seed)
 
         # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
@@ -113,18 +111,18 @@ class PPO_Agent():
         env_info = self.env.reset(train_mode=train_mode)[brain_name] # reset env
 
         # len of these var could vary depends on length of episode
-        s = [] #list of tensor: @ num_agents x state_space
+        s = [] #list of tensor: @ num_agents x state_size
         p = [] #list of tensor: num_agents x 1, requires grad
-        a = [] #list of array: num_agents x action_space
+        a = [] #list of array: num_agents x action_size
         r = [] #list of array of float @ len = num_agents
-        ns = [] #list of tensor: @ num_agents x state_space
+        ns = [] #list of tensor: @ num_agents x state_size
         d = [] #list of array: @ num_agents x 1
         A = [] #list of array of advantage value @ num_agents x 1
         V = [] #list of tensor: @ each num_agents x 1, requires grad
         td = [] #list of array of advantage value @ num_agents x 1
 
         # initial state
-        state = env_info.vector_observations # initial state: num_agents x state_space
+        state = env_info.vector_observations # initial state: num_agents x state_size
 
         # Collect the STEP trajectory data (s,a,r,ns,d)
         ep_len = 0
@@ -133,8 +131,8 @@ class PPO_Agent():
             state_predict = self.model_local(self._toTorch(state))
 
             # add noise to action and clip
-            action = state_predict['a'] #array, num_agents x action_space no grad
-            if ADD_NOISE and np.random.rand() < eps:
+            action = state_predict['a'] #array, num_agents x action_size no grad
+            if USE_OUNOISE and np.random.rand() < eps:
                 action += self.noise.sample()
             action = np.clip(action, -1, 1)
 
@@ -145,11 +143,11 @@ class PPO_Agent():
 
             self.running_rewards += np.array(reward) # accumulate running reward
 
-            s.append(self._toTorch(state)) #tensor: num_agents x state_space (129)
+            s.append(self._toTorch(state)) #tensor: num_agents x state_size (129)
             p.append(state_predict['log_prob']) #tensor: num_agents x 1, require grad
-            a.append(state_predict['a']) #np.array: num_agents x action_space
+            a.append(state_predict['a']) #np.array: num_agents x action_size
             r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
-            ns.append(self._toTorch(next_state)) #array: num_agents x state_space (129)
+            ns.append(self._toTorch(next_state)) #array: num_agents x state_size (129)
             d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
             V.append(state_predict['v']) #Q value tensor: num_agents x 1, require grad
 
@@ -200,7 +198,7 @@ class PPO_Agent():
     def step(self, eps=0.99, train_mode=True):
         """ a step of collecting, sampling data and learn from it
             eps: for exploration if external noise is added
-            train_mode: for the env 
+            train_mode: for the env
         """
 
         self.collect_data(eps=eps, train_mode=train_mode)
@@ -217,11 +215,8 @@ class PPO_Agent():
                 sampled_data = self.memory.sample() #sample from memory
                 self.learn(sampled_data) #learn from it and update grad
 
-            #if self.t_step % UPDATE_EVERY == 0:
-            #    # ------------------- update target network ------------------- #
-            #    self._soft_update(self.model_local, self.model_target, TAU)
-
-            self.ent_weight = max(self.ent_weight * 0.995, MIN_ENTROPY)
+            # entropy weight decay
+            #self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
 
 
     def learn(self, m_batch):
@@ -231,9 +226,9 @@ class PPO_Agent():
         ======
         inputs:
             m_batch: (tuple) of:
-                batch of states: (tensor) batch_size or num_agents x state_space
+                batch of states: (tensor) batch_size or num_agents x state_size
                 batch of old_probs: (tensor) batch_size or num_agents x 1
-                batch of actions: (tensor) batch_size or num_agents x action_space
+                batch of actions: (tensor) batch_size or num_agents x state_size
                 batch of rewards: (tensor) batch_size or num_agents x 1
                 batch of Advantages: (tensor) batch_size or num_agents x 1
                 batch of Returns/TDs: (tensor) batch_size or num_agents x 1
@@ -255,7 +250,7 @@ class PPO_Agent():
 
         G_clipped = torch.clamp(ratio, 1.+P_RATIO_EPS, 1.-P_RATIO_EPS) * A
 
-        G_ = torch.min(G, G_clipped) + ENT_WEIGHT * s_predictions['ent']
+        G_ = torch.min(G, G_clipped) + self.ent_weight * s_predictions['ent']
 
         actor_loss = -torch.mean(G_)
 
@@ -298,7 +293,7 @@ class PPO_Agent():
 class ReplayBuffer:
     """Fixed-size buffer to store experience tuples."""
 
-    def __init__(self, buffer_size, batch_size, action_space, num_agents, seed=0):
+    def __init__(self, buffer_size, batch_size, action_size, num_agents, seed=0):
         """Data Structure to store experience object.
         Params
         ======
@@ -309,7 +304,7 @@ class ReplayBuffer:
         self.buffer_size = buffer_size
         self.memory = deque(maxlen=buffer_size)
         self.batch_size = batch_size
-        self.action_space = action_space
+        self.action_size = action_size
         self.num_agents = num_agents
 
         # data structure for
@@ -325,10 +320,6 @@ class ReplayBuffer:
             data: (tuple) states, log_probs, rewards, As, Vs
         """
         (s_, p_, a_, r_, A_, td_) = single_traj_data #equal lengths
-
-        #for i in range(len(A)):
-        #    e = self.data(s[i], p[i], a[i], r[i], A[i], td[i])
-        #    self.memory.append(e)
 
         for s, p, a, r, A, td in zip(s_, p_, a_, r_, A_, td_): #by time step
             i = 0

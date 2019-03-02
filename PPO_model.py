@@ -19,44 +19,38 @@ class PPO_ActorCritic(nn.Module):
                    The Q value is used to calculate advantage score and td value.
     """
 
-    def __init__(self, state_space, action_space, device, seed=0,
-                 action_high=1.0, action_low=-1.0,
-                 hidden_layer1=512, hidden_layer2=128, hidden_layer3=64):
+    def __init__(self, state_size, action_size, device, seed=0,
+                 hidden_layer1=512, hidden_layer2=64):
         """Initialize parameters and build model.
         Key Params
         ======
         inputs:
             input_channel (int): Dimension of input state
-            action_space (int): Dimension of each action
+            action_size (int): Dimension of each action
             seed (int): Random seed
             hidden_layer1(int): number of neurons in first hidden layer
             hidden_layer2(int): number of neurons in second hidden layer
-            hidden_layer3(int): number of neurons in second hidden layer
         outputs:
             probability distribution (float) range 0:+1
         """
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
 
-        # action range
-        self.action_high = torch.tensor(action_high).to(device)
-        self.action_low = torch.tensor(action_low).to(device)
-
-        # input size: batch_size, state_space
+        # input size: batch_size, state_size
         # common shared network
-        self.bn_1c = nn.BatchNorm1d(state_space) #batch norm for stability
-        self.fc_1c = nn.Linear(state_space, hidden_layer1)
+        self.bn_1c = nn.BatchNorm1d(state_size) #batch norm for stability
+        self.fc_1c = nn.Linear(state_size, hidden_layer1)
         self.bn_2c = nn.BatchNorm1d(hidden_layer1) #batch norm for stability
         self.fc_2c = nn.Linear(hidden_layer1, hidden_layer2)
 
         # for actor network (state->action)
-        self.fc_4a = nn.Linear(hidden_layer2, action_space)
+        self.fc_4a = nn.Linear(hidden_layer2, action_size)
 
         # for critic network (state->V)
         self.fc_4v = nn.Linear(hidden_layer2, 1)
 
         # for converting tanh value to prob
-        self.std = nn.Parameter(torch.zeros(action_space))
+        self.std = nn.Parameter(torch.zeros(action_size))
 
         self.to(device)
 
@@ -96,7 +90,7 @@ class PPO_ActorCritic(nn.Module):
         entropy = dist.entropy().sum(-1).unsqueeze(-1) #entropy for noise
 
         pred = {'log_prob': log_prob, # prob dist based on actions generated, grad true,  (num_agents, 1)
-                'a': resampled_action.detach().cpu().numpy(), #sampled action based on prob dist (num_agents,action_space)
+                'a': resampled_action.detach().cpu().numpy(), #sampled action based on prob dist (num_agents,action_size)
                 'ent': entropy, #for noise, grad true, (num_agents or m, 1)
                 'v': v #Q score, state's V value (num_agents or m,1)
                 }
