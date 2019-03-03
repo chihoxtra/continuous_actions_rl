@@ -3,10 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-def weights_init_by_std(layer):
+def weights_init_lim(layer):
     input_dim = layer.weight.data.size()[0]
-    std = 1./np.sqrt(input_dim)
-    return (-std, std)
+    lim = 1./np.sqrt(input_dim)
+    return (-lim, lim)
 
 class PPO_ActorCritic(nn.Module):
     """
@@ -20,7 +20,7 @@ class PPO_ActorCritic(nn.Module):
     """
 
     def __init__(self, state_size, action_size, device, seed=0,
-                 hidden_layer1=512, hidden_layer2=128):
+                 hidden_layer1=1024, hidden_layer2=1024):
         """Initialize parameters and build model.
         Key Params
         ======
@@ -58,10 +58,10 @@ class PPO_ActorCritic(nn.Module):
 
     def reset_parameters(self):
         # initialize the values
-        self.fc_1c.weight.data.uniform_(*weights_init_by_std(self.fc_1c))
-        self.fc_2c.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
-        self.fc_4a.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
-        self.fc_4v.weight.data.uniform_(*weights_init_by_std(self.fc_2c))
+        self.fc_1c.weight.data.uniform_(*weights_init_lim(self.fc_1c))
+        self.fc_2c.weight.data.uniform_(*weights_init_lim(self.fc_2c))
+        self.fc_4a.weight.data.uniform_(*weights_init_lim(self.fc_4a))
+        self.fc_4v.weight.data.uniform_(*weights_init_lim(self.fc_4v))
 
     def forward(self, s, resampled_action=None):
         """Build a network that maps state -> actions."""

@@ -7,31 +7,35 @@ import torch.nn.utils as U
 from collections import namedtuple, deque
 
 from OUnoise import OUnoise
-from PPO_model import PPO_ActorCritic
+from PPO_models import PPO_ActorCritic
 """
 change log and learning notes:
 - for critic loss, using target network doesnt seem to work well
 - latest use 1 step td target as target; td error as advantage
-- working: 512, 128; batch size 512, update loop 4
+latest working version:
+batch size 512, network 512 128, learning loop 4, ent 0.01 ent dcay 0.9999
+ratio 0.2 grad clip 1.0
+test: use OU noise 1024 128 cause max at 5
 """
 
 ##### CONFIG PARMAS #####
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
-BATCH_SIZE = 512              # batch size of sampling
-MIN_BUFFER_SIZE = int(1e4)    # min buffer size before learning starts
+BATCH_SIZE = 64               # batch size of sampling
+MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
-T_MAX = 100                   # max number of time step
-LR = 1e-4                     # learning rate #5e4
-GRAD_CLIP_MAX = 1.0           # max gradient allowed
-CRITIC_L_WEIGHT = 0.8         # mean square error term weight
+T_MAX = 2000                  # max number of time step
+LR = 2e-4                     # learning rate #5e4
+GRAD_CLIP_MAX = 0.8           # max gradient allowed
+CRITIC_L_WEIGHT = 1.0         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
 ENT_DECAY = 0.9999            # decay of entropy per 'step'
 ENT_MIN = 1e-4                # min weight of entropy
-LEARNING_LOOP = 4             # no of update on grad per step
+LEARNING_LOOP = 2             # no of update on grad per step
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
-USE_OUNOISE = False           # add noise when interacting with the env
+USE_OUNOISE = True            # add noise when interacting with the env
 USE_GAE = False               # use GAE flag
 GAE_TAU = 0.95                # value control how much agent rely on current estimate
+USE_HUBER = False             # use huber loss as loss function?
 
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -73,8 +77,10 @@ class PPO_Agent():
         # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
 
-        # for keeping track of CURRENT running rewards
+        # for tracking
+        self.episodic_rewards = deque(maxlen=50000) # hist of rewards total of DONE episodes
         self.running_rewards = np.zeros(self.num_agents)
+        self.running_trajectory = [] # record info about the current trajectory
 
         # global record for normalizers
         self.r_history = deque(maxlen=50000)
@@ -104,32 +110,28 @@ class PPO_Agent():
         output: tuple of list (len: len(states)) of:
                 states, log_probs, actions, rewards, As, TDs
         """
-        # for keeping track of CURRENT running rewards
-        self.running_rewards = np.zeros(self.num_agents)
+
 
         # adminstration
         brain_name = self.env.brain_names[0]
         env_info = self.env.reset(train_mode=train_mode)[brain_name] # reset env
 
-        # len of these var could vary depends on length of episode
-        s = [] #list of tensor: @ num_agents x state_size
-        p = [] #list of tensor: num_agents x 1, requires grad
-        a = [] #list of array: num_agents x action_size
-        r = [] #list of array of float @ len = num_agents
-        ns = [] #list of tensor: @ num_agents x state_size
-        d = [] #list of array: @ num_agents x 1
-        A = [] #list of array of advantage value @ num_agents x 1
-        V = [] #list of tensor: @ each num_agents x 1, requires grad
-        td = [] #list of array of advantage value @ num_agents x 1
+        # state, next_state: TENSOR: num_agents x state_size (129)
+        # log_prob: #TENSOR: num_agents x 1, require grad
+        # action: np.array: num_agents x action_size
+        # reward, done: np.array: num_agents x 1
+        # V or Q: TENSOR: num_agents x 1, require grad
+
+        s, p, a, r, ns, d, A, V, td = ([] for l in range(9)) #initialization
 
         # initial state
-        state = env_info.vector_observations # initial state: num_agents x state_size
+        state = self._toTorch(env_info.vector_observations) # tensor: num_agents x state_size
 
         # Collect the STEP trajectory data (s,a,r,ns,d)
         ep_len = 0
         while ep_len < T_MAX:
             # state -> prob / actions
-            state_predict = self.model_local(self._toTorch(state))
+            state_predict = self.model_local(state)
 
             # add noise to action and clip
             action = state_predict['a'] #array, num_agents x action_size no grad
@@ -138,33 +140,43 @@ class PPO_Agent():
             action = np.clip(action, -1, 1)
 
             env_info = self.env.step(action)[brain_name]
-            next_state = env_info.vector_observations
-            reward = env_info.rewards #list of num_agents
-            done = env_info.local_done #list of num_agents
 
-            self.running_rewards += np.array(reward) # accumulate running reward
+            next_state = self._toTorch(env_info.vector_observations) # tensor: num_agents x state_size
+            reward = np.array(env_info.rewards) # array, num_agents
+            done = np.array(env_info.local_done) #array of num_agents
 
-            s.append(self._toTorch(state)) #tensor: num_agents x state_size (129)
+            # recognize the current reward first
+            self.running_rewards += reward
+
+            # process 'DONE' rewards
+            for i in range(len(done)):
+                if done[i]: #conclude an episode reward only when it is DONE
+                    eps_reward_total = self.running_rewards[i]
+                    self.episodic_rewards.append(self.running_rewards[i])
+                    self.running_rewards[i] = 0.0
+
+            s.append(state) #TENSOR: num_agents x state_size (129)
             p.append(state_predict['log_prob']) #tensor: num_agents x 1, require grad
             a.append(state_predict['a']) #np.array: num_agents x action_size
             r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
-            ns.append(self._toTorch(next_state)) #array: num_agents x state_size (129)
+            ns.append(next_state) #TENSOR: num_agents x state_size (129)
             d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
-            V.append(state_predict['v']) #Q value tensor: num_agents x 1, require grad
+            V.append(state_predict['v']) #Q value TENSOR: num_agents x 1, require grad
 
             state = next_state
 
             ep_len += 1
-            if np.any(done): # exit loop if ANY episode finished
-                break # RETHINK wait for all agents to end?
+            if np.all(done): # if all are done simultaneously
+                print("np.all(done) is true! miracle!")
+                break # this actually never happens
+
 
         # normalize reward
         r = self.r_normalizer(r)
 
         # Compute the Advantage/Return value
         # note that last state has no entry in record in V
-        last_state = next_state
-        last_state_predict = self.model_local(self._toTorch(last_state))
+        last_state_predict = self.model_local(next_state)
 
         # use td target as return, td error as advantage
         V.append(last_state_predict['v']) #range(ep_len) > len(V) by 1 as last state is added
@@ -191,7 +203,7 @@ class PPO_Agent():
 
         # store data in memory
         data = (s, p, a, r, A, td)
-        self.memory.add(data)
+        self.memory.add(data) #tuple of list by types of data NOT EXPERIENCE
 
         return
 
@@ -235,7 +247,6 @@ class PPO_Agent():
                 batch of Returns/TDs: (tensor) batch_size or num_agents x 1
         """
         s, p, a, r, A, td = m_batch
-        #print(s.shape, p.shape, a.shape, r.shape, A.shape, td.shape)
 
         old_prob = p.detach() # num_agents, no grad
         s_predictions = self.model_local(s, a) #use old s, a to get new prob
@@ -245,7 +256,6 @@ class PPO_Agent():
 
         #ACTOR LOSS
         ratio = (new_prob - old_prob).exp() # # num_agent or m x 1
-        #ratio = new_prob/old_prob # num_agent or m x 1
 
         G = ratio * A
 
@@ -263,7 +273,11 @@ class PPO_Agent():
 
         td_target = td
 
-        critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
+        if USE_HUBER:
+            huber_loss = torch.nn.SmoothL1Loss()
+            critic_loss = huber_loss(td_current, td_target)
+        else:
+            critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
 
         self.critic_loss.append(critic_loss.data.detach().numpy())
 
@@ -274,21 +288,6 @@ class PPO_Agent():
         total_loss.backward() #retain_graph=True
         U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
         self.optim.step()
-
-
-
-    def _soft_update(self, local_model, target_model, tau):
-        """Soft update model parameters.
-        θ_target = τ*θ_local + (1 - τ)*θ_target
-
-        Params
-        ======
-            local_model (PyTorch model): weights will be copied from
-            target_model (PyTorch model): weights will be copied to
-            tau (float): interpolation parameter
-        """
-        for target_param, local_param in zip(target_model.parameters(), local_model.parameters()):
-            target_param.data.copy_(tau*local_param.data + (1.0-tau)*target_param.data)
 
 
 class ReplayBuffer:
@@ -336,7 +335,7 @@ class ReplayBuffer:
         sample_ind = np.random.choice(len(self.memory), self.batch_size)
 
         # get the selected experiences: avoid using mid list indexing
-        s_s, s_p, s_a, s_r, s_A, s_rt = [], [], [], [], [], []
+        s_s, s_p, s_a, s_r, s_A, s_td = ([] for l in range(6))
 
         i = 0
         while i < len(sample_ind): #while loop is faster
@@ -347,10 +346,8 @@ class ReplayBuffer:
             s_p.append(e.old_probs)
             s_a.append(e.actions)
             s_r.append(e.rewards)
-            #s_d.append(e.dones)
-            #s_ns.append(e.next_states)
             s_A.append(e.As)
-            s_rt.append(e.returns)
+            s_td.append(e.returns)
             self.memory.rotate(sample_ind[i])
             i += 1
 
@@ -359,12 +356,10 @@ class ReplayBuffer:
         s_p = torch.stack(s_p).to(device)
         s_a = torch.from_numpy(np.stack(s_a)).float().to(device)
         s_r = torch.from_numpy(np.vstack(s_r)).float().to(device)
-        #s_d = torch.from_numpy(1.*np.vstack(s_d)).float().to(device)
-        #s_ns = torch.stack(s_ns).float().to(device)
         s_A = torch.from_numpy(np.stack(s_A)).float().to(device)
-        s_rt = torch.from_numpy(np.stack(s_rt)).float().to(device)
+        s_td = torch.from_numpy(np.stack(s_td)).float().to(device)
 
-        return (s_s, s_p, s_a, s_r, s_A, s_rt)
+        return (s_s, s_p, s_a, s_r, s_A, s_td)
 
     def __len__(self):
         """Return the current size of internal memory."""
