@@ -5,36 +5,36 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn.utils as U
 from collections import namedtuple, deque
-
-from OUnoise import OUnoise
 from PPO_models import PPO_ActorCritic
+
 """
 change log and learning notes:
 - for critic loss, using target network doesnt seem to work well
-- latest use 1 step td target as target; td error as advantage
+- with entropy added, OUnoise seems to be redundant
+- a larger batch size seems ok for this task 2048
+- GAE doesnt seem to work well in this case
+- Huber loss has minimal effect in this case
 latest working version:
-batch size 512, network 512 128, learning loop 4, ent 0.01 ent dcay 0.9999
-ratio 0.2 grad clip 1.0
-test: use OU noise 1024 128 cause max at 5
+batch size 2048, network 512 64, learning loop 4, ent 0.01 ent dcay 0.999
+ratio 0.3 (more room for actor to learn?) grad clip 1.0
 """
 
 ##### CONFIG PARMAS #####
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
-BATCH_SIZE = 64               # batch size of sampling
+BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
 T_MAX = 2000                  # max number of time step
-LR = 2e-4                     # learning rate #5e4
+LR = 3e-4                     # learning rate #5e4
 GRAD_CLIP_MAX = 0.8           # max gradient allowed
-CRITIC_L_WEIGHT = 1.0         # mean square error term weight
+CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
 ENT_DECAY = 0.9999            # decay of entropy per 'step'
-ENT_MIN = 1e-4                # min weight of entropy
-LEARNING_LOOP = 2             # no of update on grad per step
-P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
-USE_OUNOISE = True            # add noise when interacting with the env
+ENT_MIN = 1e-3                # min weight of entropy
+LEARNING_LOOP = 4             # no of update on grad per step
+P_RATIO_EPS = 0.3             # eps for ratio clip 1+eps, 1-eps
 USE_GAE = False               # use GAE flag
-GAE_TAU = 0.95                # value control how much agent rely on current estimate
+GAE_TAU = 1.0                 # value control how much agent rely on current estimate
 USE_HUBER = False             # use huber loss as loss function?
 
 
@@ -68,8 +68,8 @@ class PPO_Agent():
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_size, action_size, device, seed).to(device)
-        #self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
-        self.optim = optim.Adam(self.model_local.parameters(), lr=LR, eps=1e-5)
+        self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
+        #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=1.e-5)
 
         # Noise handling
         self.noise = OUnoise((num_agents, action_size), seed)
@@ -95,7 +95,6 @@ class PPO_Agent():
         print("current device: ", device)
 
 
-
     def _toTorch(self, s, dtype=torch.float32):
         return torch.tensor(s, dtype=dtype, device=device)
 
@@ -104,13 +103,12 @@ class PPO_Agent():
         return [(d-np.mean(self.r_history))/np.std(self.r_history) for d in data]
 
 
-    def collect_data(self, eps=0.99, train_mode=True):
+    def collect_data(self, train_mode=True):
         """
         Collect trajectory data and store them
         output: tuple of list (len: len(states)) of:
                 states, log_probs, actions, rewards, As, TDs
         """
-
 
         # adminstration
         brain_name = self.env.brain_names[0]
@@ -133,10 +131,7 @@ class PPO_Agent():
             # state -> prob / actions
             state_predict = self.model_local(state)
 
-            # add noise to action and clip
             action = state_predict['a'] #array, num_agents x action_size no grad
-            if USE_OUNOISE and np.random.rand() < eps:
-                action += self.noise.sample()
             action = np.clip(action, -1, 1)
 
             env_info = self.env.step(action)[brain_name]
@@ -189,7 +184,7 @@ class PPO_Agent():
                 advantage = td_target - V[i].detach().numpy()
             else:
                 td_error = r[i] + GAMMA*(1-d[i])*V[i+1].detach().numpy() - V[i].detach().numpy()
-                advantage = advantage * GAE_TAU * GAMMA * (1-d[i]) + td_error
+                advantage = advantage*GAE_TAU*GAMMA*(1-d[i]) + td_error
             A.append(advantage) #array:, num_agents x 1
             td.append(td_target) #array:, num_agents x 1
 
@@ -208,13 +203,13 @@ class PPO_Agent():
         return
 
 
-    def step(self, eps=0.99, train_mode=True):
+    def step(self, train_mode=True):
         """ a step of collecting, sampling data and learn from it
             eps: for exploration if external noise is added
             train_mode: for the env
         """
 
-        self.collect_data(eps=eps, train_mode=train_mode)
+        self.collect_data(train_mode=train_mode)
 
         if train_mode and len(self.memory) >= MIN_BUFFER_SIZE:
             if self.is_training == False:
@@ -261,9 +256,11 @@ class PPO_Agent():
 
         G_clipped = torch.clamp(ratio, 1.+P_RATIO_EPS, 1.-P_RATIO_EPS) * A
 
-        G_ = torch.min(G, G_clipped) + self.ent_weight * s_predictions['ent']
+        G_loss = torch.min(G, G_clipped).mean()
 
-        actor_loss = -torch.mean(G_)
+        G_entropy = self.ent_weight * s_predictions['ent'].mean()
+
+        actor_loss = -G_loss - G_entropy
 
         self.actor_gain.append(-actor_loss.data.detach().numpy())
 
@@ -310,9 +307,8 @@ class ReplayBuffer:
         # data structure for
         self.data = namedtuple("data", field_names=["states", "old_probs",
                                                     "actions", "rewards",
-                                                    #"dones", "next_states",
                                                     "As", "returns"])
-        self.seed = random.seed(seed)
+        torch.manual_seed(seed)
 
 
     def add(self, single_traj_data):
