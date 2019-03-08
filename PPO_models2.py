@@ -48,7 +48,8 @@ class PPO_Actor(nn.Module):
         self.fc_3a = nn.Linear(hidden_layer2, action_size)
 
         # for converting tanh value to prob
-        self.std = nn.Parameter(torch.zeros(action_size))
+        #self.std = nn.Parameter(torch.zeros(action_size))
+        self.std = nn.Parameter(torch.ones(1, action_size)*0.15)
 
         self.to(device)
 
@@ -60,7 +61,7 @@ class PPO_Actor(nn.Module):
         self.fc_2a.weight.data.uniform_(*weights_init_lim(self.fc_2a))
         self.fc_3a.weight.data.uniform_(*weights_init_lim(self.fc_3a))
 
-    def forward(self, s, resampled_action=None):
+    def forward(self, s, resampled_action=None, std_scale=1.0):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # common network
@@ -74,11 +75,15 @@ class PPO_Actor(nn.Module):
         a_mean = torch.tanh(s)
 
         # base on the action as mean create a distribution with zero std...
-        dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
+        #dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
+        dist = torch.distributions.Normal(a_mean, F.hardtanh(self.std, min_val=0.05*std_scale, max_val=0.5*std_scale))
 
         # sample from the prob distribution just generated again
         if resampled_action is None:
             resampled_action = dist.sample()
+
+        #handle nan value
+        #resampled_action[resampled_action != resampled_action] = 0.0
 
         # then we have log( p(resampled_action | state) ): batchsize, 1
         log_prob = dist.log_prob(resampled_action).sum(-1).unsqueeze(-1)
@@ -147,7 +152,10 @@ class PPO_Critic(nn.Module):
         m = F.relu(self.fc_1m(m)) # merge
 
         # td Q value
-        v = self.fc_2m(self.bn_2m(m))
+        v = F.relu(self.fc_2m(self.bn_2m(m)))
+
+        #handle nan value
+        #v[v != v] = 0.0
 
         # final output
         return v
@@ -158,12 +166,12 @@ class PPO_ActorCritic(nn.Module):
 
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.actor = PPO_Actor(state_size, action_size, device, 1024, 256, seed=seed)
-        self.critic = PPO_Critic(state_size, action_size, device, 1024, 32, seed=seed)
+        self.actor = PPO_Actor(state_size, action_size, device, 256, 64, seed=seed)
+        self.critic = PPO_Critic(state_size, action_size, device, 128, 32, seed=seed)
 
 
-    def forward(self, s, action=None):
-        log_prob, resampled_action, entropy = self.actor(s, action)
+    def forward(self, s, action=None, std_scale=1.0):
+        log_prob, resampled_action, entropy = self.actor(s, action, std_scale)
         v = self.critic(s, resampled_action)
 
         pred = {'log_prob': log_prob, # prob dist based on actions generated, grad true,  (num_agents, 1)

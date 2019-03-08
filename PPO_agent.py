@@ -5,7 +5,7 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn.utils as U
 from collections import namedtuple, deque
-from PPO_models import PPO_ActorCritic
+from PPO_models2 import PPO_ActorCritic
 
 """
 change log and learning notes:
@@ -15,24 +15,35 @@ change log and learning notes:
 - GAE doesnt seem to work well in this case
 - Huber loss has minimal effect in this case
 latest working version:
-batch size 2048, network 512 64, learning loop 4, ent 0.01 ent dcay 0.999
-ratio 0.3 (more room for actor to learn?) grad clip 1.0
+last version: 1024, 64 worked until episodic reward of around 7.
+last version: 512, 64 worked until episodic reward of around 12.
+last version: 1024 64 cap reward at 8
+last version: 1024 512 cap reward at 6
+last version: 512 512 cap reward at 9
+last version: 512 64 64 reached 1x but nan
+last version: 512 128 64 reached around 4 slow down a lot
+this version:
+batch size 64, network 128 128, learning loop 2, ent 0.01 ent dcay 0.999
+ratio 0.1 (more room for actor to learn?) grad clip 0.8 lr 1e-4 CRITIC_L_WEIGHT 0.8
+added nan conversion mechanism, added std scale and hence changed ent to 0.01 again
 """
 
 ##### CONFIG PARMAS #####
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
-BATCH_SIZE = 2048             # batch size of sampling
+BATCH_SIZE = 64               # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
-T_MAX = 2000                  # max number of time step
-LR = 3e-4                     # learning rate #5e4
-GRAD_CLIP_MAX = 0.8           # max gradient allowed
+T_MAX = 1100                  # max number of time step
+LR = 1e-5                     # learning rate #5e4
+GRAD_CLIP_MAX = 1.0           # max gradient allowed
 CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
-ENT_DECAY = 0.9999            # decay of entropy per 'step'
+ENT_DECAY = 0.999             # decay of entropy per 'step'
 ENT_MIN = 1e-3                # min weight of entropy
-LEARNING_LOOP = 4             # no of update on grad per step
-P_RATIO_EPS = 0.3             # eps for ratio clip 1+eps, 1-eps
+STD_SCALE_INIT = 0.5          # initial value of std scale for action resampling
+STD_DECAY = 0.99              # scale decay of std
+LEARNING_LOOP = 2             # no of update on grad per step
+P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
 USE_GAE = False               # use GAE flag
 GAE_TAU = 1.0                 # value control how much agent rely on current estimate
 USE_HUBER = False             # use huber loss as loss function?
@@ -71,11 +82,11 @@ class PPO_Agent():
         self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
         #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=1.e-5)
 
-        # Noise handling
-        self.noise = OUnoise((num_agents, action_size), seed)
-
         # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
+
+        # std for noise
+        self.std_scale = STD_SCALE_INIT
 
         # for tracking
         self.episodic_rewards = deque(maxlen=50000) # hist of rewards total of DONE episodes
@@ -129,7 +140,7 @@ class PPO_Agent():
         ep_len = 0
         while ep_len < T_MAX:
             # state -> prob / actions
-            state_predict = self.model_local(state)
+            state_predict = self.model_local(state, std_scale=self.std_scale)
 
             action = state_predict['a'] #array, num_agents x action_size no grad
             action = np.clip(action, -1, 1)
@@ -225,6 +236,8 @@ class PPO_Agent():
 
             # entropy weight decay
             self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
+            # std decay
+            self.std_scale = self.std_scale * STD_DECAY
 
 
     def learn(self, m_batch):
@@ -304,7 +317,7 @@ class ReplayBuffer:
         self.action_size = action_size
         self.num_agents = num_agents
 
-        # data structure for
+        # data structure for storing individual experience
         self.data = namedtuple("data", field_names=["states", "old_probs",
                                                     "actions", "rewards",
                                                     "As", "returns"])
