@@ -22,32 +22,36 @@ last version: 1024 512 cap reward at 6
 last version: 512 512 cap reward at 9
 last version: 512 64 64 reached 1x but nan
 last version: 512 128 64 reached around 4 slow down a lot
+
 this version:
+2 models version. 256 64 for actor 128 32 for critic.
 batch size 64, network 128 128, learning loop 2, ent 0.01 ent dcay 0.999
-ratio 0.1 (more room for actor to learn?) grad clip 0.8 lr 1e-4 CRITIC_L_WEIGHT 0.8
-added nan conversion mechanism, added std scale and hence changed ent to 0.01 again
+ratio 0.1 (more room for actor to learn?) grad clip 1.0 lr 1e-5 CRITIC_L_WEIGHT 1.0
+removed nan conversion mechanism, added std scale and hence changed ent to 0.01 again
+added leaky relu for critic output
 """
 
 ##### CONFIG PARMAS #####
 BUFFER_SIZE = int(1e5)        # buffer size of memory storage
-BATCH_SIZE = 64               # batch size of sampling
+BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
-T_MAX = 1100                  # max number of time step
-LR = 1e-5                     # learning rate #5e4
-GRAD_CLIP_MAX = 1.0           # max gradient allowed
+T_MAX = 1024                  # max number of time step
+#ACTOR_LR = 3e-4              # learning rate #5e4
+LR = 5e-4                     # learning rate #5e4
+GRAD_CLIP_MAX = 0.8           # max gradient allowed
 CRITIC_L_WEIGHT = 0.5         # mean square error term weight
-ENT_WEIGHT = 0.01             # weight of entropy added
+ENT_WEIGHT = 0.02             # weight of entropy added
 ENT_DECAY = 0.999             # decay of entropy per 'step'
 ENT_MIN = 1e-3                # min weight of entropy
-STD_SCALE_INIT = 0.5          # initial value of std scale for action resampling
-STD_DECAY = 0.99              # scale decay of std
-LEARNING_LOOP = 2             # no of update on grad per step
+STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
+STD_SCALE_DECAY = 0.99        # scale decay of std
+STD_SCALE_MIN = 0.01          # min value of STD scale
+LEARNING_LOOP = 4             # no of update on grad per step
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
 USE_GAE = False               # use GAE flag
-GAE_TAU = 1.0                 # value control how much agent rely on current estimate
+GAE_TAU = 0.9                 # value control how much agent rely on current estimate
 USE_HUBER = False             # use huber loss as loss function?
-
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
 
@@ -79,8 +83,9 @@ class PPO_Agent():
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_size, action_size, device, seed).to(device)
-        self.optim = optim.RMSprop(self.model_local.parameters(), lr=LR)
-        #self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=1.e-5)
+        self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=1.e-5)
+        #self.optim_actor = optim.Adam(self.model_local.actor.parameters(), lr=ACTOR_LR, weight_decay=1.e-5)
+        #self.optim_critic = optim.Adam(self.model_local.critic.parameters(), lr=CRITIC_LR, weight_decay=1.e-5)
 
         # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
@@ -163,7 +168,7 @@ class PPO_Agent():
 
             s.append(state) #TENSOR: num_agents x state_size (129)
             p.append(state_predict['log_prob']) #tensor: num_agents x 1, require grad
-            a.append(state_predict['a']) #np.array: num_agents x action_size
+            a.append(action) #np.array: num_agents x action_size
             r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
             ns.append(next_state) #TENSOR: num_agents x state_size (129)
             d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
@@ -237,7 +242,7 @@ class PPO_Agent():
             # entropy weight decay
             self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
             # std decay
-            self.std_scale = self.std_scale * STD_DECAY
+            self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
 
 
     def learn(self, m_batch):
@@ -256,13 +261,13 @@ class PPO_Agent():
         """
         s, p, a, r, A, td = m_batch
 
+        ############################# ACTOR LOSS ##############################
         old_prob = p.detach() # num_agents, no grad
         s_predictions = self.model_local(s, a) #use old s, a to get new prob
         new_prob = s_predictions['log_prob'] # num_agents x 1
         assert(new_prob.requires_grad == True)
         assert(A.requires_grad == False)
 
-        #ACTOR LOSS
         ratio = (new_prob - old_prob).exp() # # num_agent or m x 1
 
         G = ratio * A
@@ -273,11 +278,9 @@ class PPO_Agent():
 
         G_entropy = self.ent_weight * s_predictions['ent'].mean()
 
-        actor_loss = -G_loss - G_entropy
+        actor_loss = -(G_loss + G_entropy)
 
-        self.actor_gain.append(-actor_loss.data.detach().numpy())
-
-        #CRITIC LOSS
+        ############################ CRITIC LOSS ##############################
         td_current = s_predictions['v'] # # num_agent or m x 1, requires grad
         assert(td_current.requires_grad == True)
 
@@ -289,15 +292,16 @@ class PPO_Agent():
         else:
             critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
 
-        self.critic_loss.append(critic_loss.data.detach().numpy())
-
         # TOTAL LOSS
-        total_loss = actor_loss + CRITIC_L_WEIGHT * critic_loss
+        total_loss = actor_loss + CRITIC_L_WEIGHT*critic_loss
 
         self.optim.zero_grad()
         total_loss.backward() #retain_graph=True
-        U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
+        U.clip_grad_norm_(self.model_local.critic.parameters(), GRAD_CLIP_MAX)
         self.optim.step()
+
+        self.actor_gain.append(-actor_loss.data.detach().numpy())
+        self.critic_loss.append(critic_loss.data.detach().numpy())
 
 
 class ReplayBuffer:

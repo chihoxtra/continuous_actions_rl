@@ -19,7 +19,7 @@ class PPO_Actor(nn.Module):
     """
 
     def __init__(self, state_size, action_size, device,
-                 hidden_layer1, hidden_layer2, seed=0):
+                 hidden_layer1, hidden_layer2, hidden_layer3, seed=0):
         """Initialize parameters and build model.
         Key Params
         ======
@@ -37,15 +37,17 @@ class PPO_Actor(nn.Module):
         self.seed = torch.manual_seed(seed)
 
         # input size: batch_size or num_agents x state_size
-        self.bn_1a = nn.BatchNorm1d(state_size)
-        self.fc_1a = nn.Linear(state_size, hidden_layer1)
+        #self.bn_1a = nn.BatchNorm1d(state_size)
+        self.fc_1a = nn.Linear(state_size, hidden_layer1, bias=True)
 
         self.bn_2a = nn.BatchNorm1d(hidden_layer1)
-        self.fc_2a = nn.Linear(hidden_layer1, hidden_layer2)
+        self.fc_2a = nn.Linear(hidden_layer1, hidden_layer2, bias=True)
 
-        # for actor network (state->action)
         self.bn_3a = nn.BatchNorm1d(hidden_layer2)
-        self.fc_3a = nn.Linear(hidden_layer2, action_size)
+        self.fc_3a = nn.Linear(hidden_layer2, hidden_layer3, bias=True)
+
+        self.bn_4a = nn.BatchNorm1d(hidden_layer3)
+        self.fc_4a = nn.Linear(hidden_layer3, action_size, bias=True)
 
         # for converting tanh value to prob
         #self.std = nn.Parameter(torch.zeros(action_size))
@@ -60,15 +62,16 @@ class PPO_Actor(nn.Module):
         self.fc_1a.weight.data.uniform_(*weights_init_lim(self.fc_1a))
         self.fc_2a.weight.data.uniform_(*weights_init_lim(self.fc_2a))
         self.fc_3a.weight.data.uniform_(*weights_init_lim(self.fc_3a))
+        self.fc_4a.weight.data.uniform_(*weights_init_lim(self.fc_4a))
 
     def forward(self, s, resampled_action=None, std_scale=1.0):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # common network
-
-        s = F.relu(self.fc_1a(self.bn_1a(s)))
+        s = F.relu(self.fc_1a(s))
         s = F.relu(self.fc_2a(self.bn_2a(s)))
-        s = self.fc_3a(self.bn_3a(s)) #-> action/critic streams
+        s = F.relu(self.fc_3a(self.bn_3a(s)))
+        s = self.fc_4a(self.bn_4a(s)) #-> action/critic streams
 
         # proposed action, we will then use this action as mean to generate
         # a prob distribution to output log_prob
@@ -76,7 +79,7 @@ class PPO_Actor(nn.Module):
 
         # base on the action as mean create a distribution with zero std...
         #dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
-        dist = torch.distributions.Normal(a_mean, F.hardtanh(self.std, min_val=0.05*std_scale, max_val=0.5*std_scale))
+        dist = torch.distributions.Normal(a_mean, F.hardtanh(self.std, min_val=0.02*std_scale, max_val=0.25*std_scale))
 
         # sample from the prob distribution just generated again
         if resampled_action is None:
@@ -101,7 +104,7 @@ class PPO_Critic(nn.Module):
     """
 
     def __init__(self, state_size, action_size, device,
-                 hidden_layer1, hidden_layer2, seed=0):
+                 hidden_layer1, hidden_layer2, hidden_layer3, seed=0):
         """Initialize parameters and build model.
         Key Params
         ======
@@ -120,15 +123,18 @@ class PPO_Critic(nn.Module):
 
         ################# STATE INPUTS ##################
         # input size: batch_size or m x state_size
-        self.bn_1s = nn.BatchNorm1d(state_size)
-        self.fc_1s = nn.Linear(state_size, hidden_layer1)
+        #self.bn_1s = nn.BatchNorm1d(state_size)
+        self.fc_1s = nn.Linear(state_size, hidden_layer1, bias=True)
 
         ########### ACTION INPUTS / MERGE LAYERS #########
         # input size: batch_size or num_agents x action sizes
-        self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2)
+        self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2, bias=True)
         self.bn_2m = nn.BatchNorm1d(hidden_layer2)
 
-        self.fc_2m = nn.Linear(hidden_layer2, 1)
+        self.fc_2m = nn.Linear(hidden_layer2, hidden_layer3, bias=True)
+        self.bn_3m = nn.BatchNorm1d(hidden_layer3)
+
+        self.fc_3m = nn.Linear(hidden_layer3, 1, bias=True)
 
         self.to(device)
 
@@ -137,22 +143,25 @@ class PPO_Critic(nn.Module):
     def reset_parameters(self):
         # initialize the values
         self.fc_1s.weight.data.uniform_(*weights_init_lim(self.fc_1s))
-        self.fc_1m.weight.data.uniform_(*weights_init_lim(self.fc_1m))
         self.fc_2m.weight.data.uniform_(*weights_init_lim(self.fc_2m))
+        self.fc_3m.weight.data.uniform_(*weights_init_lim(self.fc_3m))
 
     def forward(self, s, a):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # state network
-        s = F.relu(self.fc_1s(self.bn_1s(s)))
+        s = F.relu(self.fc_1s(s))
 
         # merge 2 streams to 1 by adding action
-        m = torch.cat((s, a), dim=1)
+        m = torch.cat((s, a), dim=-1)
 
         m = F.relu(self.fc_1m(m)) # merge
 
         # td Q value
-        v = F.relu(self.fc_2m(self.bn_2m(m)))
+        m = F.relu(self.fc_2m(self.bn_2m(m)))
+
+        # td Q value
+        v = F.relu(self.fc_3m(self.bn_3m(m)))
 
         #handle nan value
         #v[v != v] = 0.0
@@ -166,8 +175,8 @@ class PPO_ActorCritic(nn.Module):
 
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.actor = PPO_Actor(state_size, action_size, device, 256, 64, seed=seed)
-        self.critic = PPO_Critic(state_size, action_size, device, 128, 32, seed=seed)
+        self.actor = PPO_Actor(state_size, action_size, device, 512, 128, 64, seed=seed)
+        self.critic = PPO_Critic(state_size, action_size, device, 512, 64, 32, seed=seed)
 
 
     def forward(self, s, action=None, std_scale=1.0):
