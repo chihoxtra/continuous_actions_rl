@@ -37,8 +37,7 @@ BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
 T_MAX = 1024                  # max number of time step
-#ACTOR_LR = 3e-4              # learning rate #5e4
-LR = 5e-4                     # learning rate #5e4
+LR = 5e-4                     # learning rate #5e-4
 GRAD_CLIP_MAX = 0.8           # max gradient allowed
 CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.02             # weight of entropy added
@@ -243,6 +242,8 @@ class PPO_Agent():
             self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
             # std decay
             self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
+
+            self.t_step += 1
 
 
     def learn(self, m_batch):

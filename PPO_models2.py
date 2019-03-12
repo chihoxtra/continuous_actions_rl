@@ -49,8 +49,7 @@ class PPO_Actor(nn.Module):
         self.bn_4a = nn.BatchNorm1d(hidden_layer3)
         self.fc_4a = nn.Linear(hidden_layer3, action_size, bias=True)
 
-        # for converting tanh value to prob
-        #self.std = nn.Parameter(torch.zeros(action_size))
+        # for noise
         self.std = nn.Parameter(torch.ones(1, action_size)*0.15)
 
         self.to(device)
@@ -84,9 +83,6 @@ class PPO_Actor(nn.Module):
         # sample from the prob distribution just generated again
         if resampled_action is None:
             resampled_action = dist.sample()
-
-        #handle nan value
-        #resampled_action[resampled_action != resampled_action] = 0.0
 
         # then we have log( p(resampled_action | state) ): batchsize, 1
         log_prob = dist.log_prob(resampled_action).sum(-1).unsqueeze(-1)
@@ -162,9 +158,6 @@ class PPO_Critic(nn.Module):
 
         # td Q value
         v = F.relu(self.fc_3m(self.bn_3m(m)))
-
-        #handle nan value
-        #v[v != v] = 0.0
 
         # final output
         return v
