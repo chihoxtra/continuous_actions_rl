@@ -78,7 +78,7 @@ class PPO_Actor(nn.Module):
 
         # base on the action as mean create a distribution with zero std...
         #dist = torch.distributions.Normal(a_mean, F.softplus(self.std))
-        dist = torch.distributions.Normal(a_mean, F.hardtanh(self.std, min_val=0.02*std_scale, max_val=0.25*std_scale))
+        dist = torch.distributions.Normal(a_mean, F.hardtanh(self.std, min_val=0.02*std_scale, max_val=0.5*std_scale))
 
         # sample from the prob distribution just generated again
         if resampled_action is None:
@@ -127,6 +127,8 @@ class PPO_Critic(nn.Module):
         self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2, bias=True)
         self.bn_2m = nn.BatchNorm1d(hidden_layer2)
 
+
+
         self.fc_2m = nn.Linear(hidden_layer2, hidden_layer3, bias=True)
         self.bn_3m = nn.BatchNorm1d(hidden_layer3)
 
@@ -169,7 +171,7 @@ class PPO_ActorCritic(nn.Module):
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
         self.actor = PPO_Actor(state_size, action_size, device, 512, 128, 64, seed=seed)
-        self.critic = PPO_Critic(state_size, action_size, device, 512, 64, 32, seed=seed)
+        self.critic = PPO_Critic(state_size, action_size, device, 512, 64, 64, seed=seed)
 
 
     def forward(self, s, action=None, std_scale=1.0):

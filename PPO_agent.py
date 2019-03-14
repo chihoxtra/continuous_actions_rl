@@ -43,8 +43,8 @@ CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.02             # weight of entropy added
 ENT_DECAY = 0.999             # decay of entropy per 'step'
 ENT_MIN = 1e-3                # min weight of entropy
-STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
-STD_SCALE_DECAY = 0.99        # scale decay of std
+STD_SCALE_INIT = 2.0          # initial value of std scale for action resampling
+STD_SCALE_DECAY = 0.999       # scale decay of std
 STD_SCALE_MIN = 0.01          # min value of STD scale
 LEARNING_LOOP = 4             # no of update on grad per step
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
@@ -243,8 +243,7 @@ class PPO_Agent():
             # std decay
             self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
 
-            self.t_step += 1
-
+        self.t_step += 1
 
     def learn(self, m_batch):
         """Update the parameters of the policy based on the data in the sampled
@@ -273,7 +272,7 @@ class PPO_Agent():
 
         G = ratio * A
 
-        G_clipped = torch.clamp(ratio, 1.+P_RATIO_EPS, 1.-P_RATIO_EPS) * A
+        G_clipped = torch.clamp(ratio, 1.-P_RATIO_EPS, 1.+P_RATIO_EPS) * A
 
         G_loss = torch.min(G, G_clipped).mean()
 
