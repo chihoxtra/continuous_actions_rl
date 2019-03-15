@@ -127,8 +127,6 @@ class PPO_Critic(nn.Module):
         self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2, bias=True)
         self.bn_2m = nn.BatchNorm1d(hidden_layer2)
 
-
-
         self.fc_2m = nn.Linear(hidden_layer2, hidden_layer3, bias=True)
         self.bn_3m = nn.BatchNorm1d(hidden_layer3)
 
