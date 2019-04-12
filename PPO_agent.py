@@ -8,22 +8,22 @@ from collections import namedtuple, deque
 from PPO_2_models import PPO_ActorCritic
 
 ##### CONFIG PARMAS #####
-BUFFER_SIZE = int(1e4)        # buffer size of memory storage
+BUFFER_SIZE = int(1e5)        # buffer size of memory storage
 BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
 T_MAX = 2048                  # max number of time step
-LR = 3e-4                     # learning rate #5e-4
+LR = 1e-4                     # learning rate #5e-4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
 CRITIC_L_WEIGHT = 1.0         # mean square error term weight
 ENT_WEIGHT = 0.02             # weight of entropy added
 ENT_DECAY = 0.9999            # decay of entropy per 'step'
 ENT_MIN = 1e-3                # min weight of entropy
 STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
-STD_SCALE_DECAY = 0.9995      # scale decay of std
-STD_SCALE_MIN = 0.05          # min value of STD scale
+STD_SCALE_DECAY = 0.999       # scale decay of std
+STD_SCALE_MIN = 0.1           # min value of STD scale
 LEARN_EVERY = 1               # no of step until next update
-LEARNING_LOOP = 1             # no of learning on grad per update
+LEARNING_LOOP = 5             # no of learning on grad per update
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
 USE_GAE = True                # use GAE flag
 GAE_TAU = 0.95                # value control how much agent rely on current estimate
