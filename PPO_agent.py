@@ -5,51 +5,28 @@ import torch.optim as optim
 import torch.nn.functional as F
 import torch.nn.utils as U
 from collections import namedtuple, deque
-from PPO_models2 import PPO_ActorCritic
-
-"""
-change log and learning notes:
-- for critic loss, using target network doesnt seem to work well
-- with entropy added, OUnoise seems to be redundant
-- a larger batch size seems ok for this task 2048
-- GAE doesnt seem to work well in this case
-- Huber loss has minimal effect in this case
-latest working version:
-last version: 1024, 64 worked until episodic reward of around 7.
-last version: 512, 64 worked until episodic reward of around 12.
-last version: 1024 64 cap reward at 8
-last version: 1024 512 cap reward at 6
-last version: 512 512 cap reward at 9
-last version: 512 64 64 reached 1x but nan
-last version: 512 128 64 reached around 4 slow down a lot
-
-this version:
-2 models version. 256 64 for actor 128 32 for critic.
-batch size 64, network 128 128, learning loop 2, ent 0.01 ent dcay 0.999
-ratio 0.1 (more room for actor to learn?) grad clip 1.0 lr 1e-5 CRITIC_L_WEIGHT 1.0
-removed nan conversion mechanism, added std scale and hence changed ent to 0.01 again
-added leaky relu for critic output
-"""
+from PPO_2_models import PPO_ActorCritic
 
 ##### CONFIG PARMAS #####
-BUFFER_SIZE = int(1e5)        # buffer size of memory storage
+BUFFER_SIZE = int(1e4)        # buffer size of memory storage
 BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
-T_MAX = 1024                  # max number of time step
-LR = 5e-4                     # learning rate #5e-4
-GRAD_CLIP_MAX = 0.8           # max gradient allowed
-CRITIC_L_WEIGHT = 0.5         # mean square error term weight
+T_MAX = 2048                  # max number of time step
+LR = 3e-4                     # learning rate #5e-4
+GRAD_CLIP_MAX = 1.0           # max gradient allowed
+CRITIC_L_WEIGHT = 1.0         # mean square error term weight
 ENT_WEIGHT = 0.02             # weight of entropy added
-ENT_DECAY = 0.999             # decay of entropy per 'step'
+ENT_DECAY = 0.9999            # decay of entropy per 'step'
 ENT_MIN = 1e-3                # min weight of entropy
-STD_SCALE_INIT = 2.0          # initial value of std scale for action resampling
-STD_SCALE_DECAY = 0.999       # scale decay of std
-STD_SCALE_MIN = 0.01          # min value of STD scale
-LEARNING_LOOP = 4             # no of update on grad per step
+STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
+STD_SCALE_DECAY = 0.9995      # scale decay of std
+STD_SCALE_MIN = 0.05          # min value of STD scale
+LEARN_EVERY = 1               # no of step until next update
+LEARNING_LOOP = 1             # no of learning on grad per update
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
-USE_GAE = False               # use GAE flag
-GAE_TAU = 0.9                 # value control how much agent rely on current estimate
+USE_GAE = True                # use GAE flag
+GAE_TAU = 0.95                # value control how much agent rely on current estimate
 USE_HUBER = False             # use huber loss as loss function?
 
 device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -68,6 +45,7 @@ class PPO_Agent():
             seed (int): random seed
         """
         self.env = env
+        self.brain_name = self.env.brain_names[0]
         self.state_size = state_size
         self.action_size = action_size
         self.num_agents = num_agents
@@ -82,9 +60,9 @@ class PPO_Agent():
 
         # Init Network Models and Optimizers
         self.model_local = PPO_ActorCritic(state_size, action_size, device, seed).to(device)
-        self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=1.e-5)
-        #self.optim_actor = optim.Adam(self.model_local.actor.parameters(), lr=ACTOR_LR, weight_decay=1.e-5)
-        #self.optim_critic = optim.Adam(self.model_local.critic.parameters(), lr=CRITIC_LR, weight_decay=1.e-5)
+        self.optim = optim.Adam(self.model_local.parameters(), lr=LR, weight_decay=0.0)
+        #self.optim_actor = optim.Adam(self.model_local.actor.parameters(), lr=ACTOR_LR)
+        #self.optim_critic = optim.Adam(self.model_local.critic.parameters(), lr=CRITIC_LR, weight_decay=0.)
 
         # Initialize time step (for updating every UPDATE_EVERY steps and others)
         self.t_step = 0
@@ -118,24 +96,23 @@ class PPO_Agent():
         return [(d-np.mean(self.r_history))/np.std(self.r_history) for d in data]
 
 
-    def collect_data(self, train_mode=True):
+    def _collect_trajectory_data(self, train_mode=True):
         """
         Collect trajectory data and store them
         output: tuple of list (len: len(states)) of:
                 states, log_probs, actions, rewards, As, TDs
         """
 
-        # adminstration
-        brain_name = self.env.brain_names[0]
-        env_info = self.env.reset(train_mode=train_mode)[brain_name] # reset env
+        # reset env and running reward
+        env_info = self.env.reset(train_mode=train_mode)[self.brain_name] # reset env
+        self.running_rewards = np.zeros(self.num_agents)
 
-        # state, next_state: TENSOR: num_agents x state_size (129)
+        s, p, a, r, ns, d, A, V, td = ([] for l in range(9)) #initialization
+        # s, ns: TENSOR: num_agents x state_size (129)
         # log_prob: #TENSOR: num_agents x 1, require grad
         # action: np.array: num_agents x action_size
         # reward, done: np.array: num_agents x 1
         # V or Q: TENSOR: num_agents x 1, require grad
-
-        s, p, a, r, ns, d, A, V, td = ([] for l in range(9)) #initialization
 
         # initial state
         state = self._toTorch(env_info.vector_observations) # tensor: num_agents x state_size
@@ -149,36 +126,29 @@ class PPO_Agent():
             action = state_predict['a'] #array, num_agents x action_size no grad
             action = np.clip(action, -1, 1)
 
-            env_info = self.env.step(action)[brain_name]
+            env_info = self.env.step(action)[self.brain_name]
 
             next_state = self._toTorch(env_info.vector_observations) # tensor: num_agents x state_size
-            reward = np.array(env_info.rewards) # array, num_agents
-            done = np.array(env_info.local_done) #array of num_agents
+            reward = np.array(env_info.rewards) # array: (num_agents,)
+            done = np.array(env_info.local_done) #array: (num_agents,)
 
             # recognize the current reward first
             self.running_rewards += reward
 
-            # process 'DONE' rewards
-            for i in range(len(done)):
-                if done[i]: #conclude an episode reward only when it is DONE
-                    eps_reward_total = self.running_rewards[i]
-                    self.episodic_rewards.append(self.running_rewards[i])
-                    self.running_rewards[i] = 0.0
-
             s.append(state) #TENSOR: num_agents x state_size (129)
-            p.append(state_predict['log_prob']) #tensor: num_agents x 1, require grad
+            p.append(state_predict['log_prob']) #tensor: (num_agents x 1), require grad
             a.append(action) #np.array: num_agents x action_size
             r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
             ns.append(next_state) #TENSOR: num_agents x state_size (129)
             d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
             V.append(state_predict['v']) #Q value TENSOR: num_agents x 1, require grad
 
-            state = next_state
-
-            ep_len += 1
-            if np.all(done): # if all are done simultaneously
-                print("np.all(done) is true! miracle!")
+            if np.any(done): # if all are done simultaneously
+                self.episodic_rewards.append(np.mean(self.running_rewards))
                 break # this actually never happens
+
+            state = next_state
+            ep_len += 1
 
 
         # normalize reward
@@ -192,16 +162,17 @@ class PPO_Agent():
         V.append(last_state_predict['v']) #range(ep_len) > len(V) by 1 as last state is added
 
         advantage = np.zeros([self.num_agents, 1])
-        td_target = last_state_predict['v'].detach().numpy()
+        last_state_Q = last_state_predict['v'].detach().numpy()
         for i in reversed(range(ep_len)):
-            td_target = r[i] + GAMMA*(1-d[i])*td_target
+            td_target = r[i] + GAMMA*(1-d[i])*last_state_Q
+            td_current = V[i].detach().numpy()
             if not USE_GAE:
-                advantage = td_target - V[i].detach().numpy()
+                advantage = td_target - td_current
             else:
-                td_error = r[i] + GAMMA*(1-d[i])*V[i+1].detach().numpy() - V[i].detach().numpy()
+                td_error = r[i] + GAMMA*(1-d[i])*V[i+1].detach().numpy() - td_current
                 advantage = advantage*GAE_TAU*GAMMA*(1-d[i]) + td_error
-            A.append(advantage) #array:, num_agents x 1
-            td.append(td_target) #array:, num_agents x 1
+            A.append(advantage) #array:, num_agents x 1, no grad
+            td.append(td_target) #array:, num_agents x 1, no grad
 
         # reverse back the list
         A = [a for a in reversed(A)]
@@ -224,24 +195,19 @@ class PPO_Agent():
             train_mode: for the env
         """
 
-        self.collect_data(train_mode=train_mode)
+        self._collect_trajectory_data(train_mode=train_mode)
 
         if train_mode and len(self.memory) >= MIN_BUFFER_SIZE:
             if self.is_training == False:
-                print("")
                 print("Prefetch completed. Training starts! \r")
                 print("Number of Agents: ", self.num_agents)
                 print("Device: ", device)
                 self.is_training = True
 
-            for _ in range(LEARNING_LOOP):
-                sampled_data = self.memory.sample() #sample from memory
-                self.learn(sampled_data) #learn from it and update grad
-
-            # entropy weight decay
-            self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
-            # std decay
-            self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
+            if self.t_step % LEARN_EVERY == 0:
+                for _ in range(LEARNING_LOOP):
+                    sampled_data = self.memory.sample() #sample from memory
+                    self.learn(sampled_data) #learn from it and update grad
 
         self.t_step += 1
 
@@ -272,7 +238,8 @@ class PPO_Agent():
 
         G = ratio * A
 
-        G_clipped = torch.clamp(ratio, 1.-P_RATIO_EPS, 1.+P_RATIO_EPS) * A
+        G_clipped = torch.clamp(ratio, min=1.-P_RATIO_EPS,
+                                       max=1.+P_RATIO_EPS) * A
 
         G_loss = torch.min(G, G_clipped).mean()
 
@@ -291,17 +258,23 @@ class PPO_Agent():
             critic_loss = huber_loss(td_current, td_target)
         else:
             critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
-
+        #critic_loss = CRITIC_L_WEIGHT * critic_loss
         # TOTAL LOSS
         total_loss = actor_loss + CRITIC_L_WEIGHT*critic_loss
 
         self.optim.zero_grad()
         total_loss.backward() #retain_graph=True
-        U.clip_grad_norm_(self.model_local.critic.parameters(), GRAD_CLIP_MAX)
+        U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
         self.optim.step()
+
 
         self.actor_gain.append(-actor_loss.data.detach().numpy())
         self.critic_loss.append(critic_loss.data.detach().numpy())
+
+        # entropy weight decay
+        self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
+        # std decay
+        self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
 
 
 class ReplayBuffer:
