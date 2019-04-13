@@ -17,7 +17,7 @@ class PPO_Actor(nn.Module):
     """
 
     def __init__(self, state_size, action_size, device,
-                 hidden_layer1, hidden_layer2, hidden_layer3, seed=0, sigma=0.15):
+                 hidden_layer1, hidden_layer2, hidden_layer3, seed=0, sigma=0.10):
         """Initialize parameters and build model.
         Key Params
         ======

@@ -8,20 +8,20 @@ from collections import namedtuple, deque
 from PPO_2_models import PPO_ActorCritic
 
 ##### CONFIG PARMAS #####
-BUFFER_SIZE = int(1e5)        # buffer size of memory storage
+BUFFER_SIZE = int(5e4)        # buffer size of memory storage
 BATCH_SIZE = 2048             # batch size of sampling
 MIN_BUFFER_SIZE = BATCH_SIZE  # min buffer size before learning starts
 GAMMA = 0.99                  # discount factor
 T_MAX = 2048                  # max number of time step
 LR = 1e-4                     # learning rate #5e-4
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
-CRITIC_L_WEIGHT = 1.0         # mean square error term weight
+CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.02             # weight of entropy added
-ENT_DECAY = 0.9999            # decay of entropy per 'step'
-ENT_MIN = 1e-3                # min weight of entropy
+ENT_DECAY = 0.999             # decay of entropy per 'step'
+ENT_MIN = 1e-4                # min weight of entropy
 STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
-STD_SCALE_DECAY = 0.999       # scale decay of std
-STD_SCALE_MIN = 0.1           # min value of STD scale
+#STD_SCALE_DECAY = 0.9994      # scale decay of std
+#STD_SCALE_MIN = 0.1           # min value of STD scale
 LEARN_EVERY = 1               # no of step until next update
 LEARNING_LOOP = 5             # no of learning on grad per update
 P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
@@ -71,16 +71,17 @@ class PPO_Agent():
         self.std_scale = STD_SCALE_INIT
 
         # for tracking
-        self.episodic_rewards = deque(maxlen=50000) # hist of rewards total of DONE episodes
+        self.episodic_rewards = deque(maxlen=100000) # hist of rewards total of DONE episodes
         self.running_rewards = np.zeros(self.num_agents)
         self.running_trajectory = [] # record info about the current trajectory
 
         # global record for normalizers
-        self.r_history = deque(maxlen=50000)
+        self.r_history = deque(maxlen=100000)
 
         # for tracking
-        self.critic_loss = deque(maxlen=100)
-        self.actor_gain = deque(maxlen=100)
+        self.critic_loss_hist = deque(maxlen=100)
+        self.actor_gain_hist = deque(maxlen=100)
+        self.entropy_hist = deque(maxlen=100)
 
         # training or just accumulating experience?
         self.is_training = False
@@ -162,14 +163,15 @@ class PPO_Agent():
         V.append(last_state_predict['v']) #range(ep_len) > len(V) by 1 as last state is added
 
         advantage = np.zeros([self.num_agents, 1])
-        last_state_Q = last_state_predict['v'].detach().numpy()
+        td_target = last_state_predict['v'].detach().numpy()
         for i in reversed(range(ep_len)):
-            td_target = r[i] + GAMMA*(1-d[i])*last_state_Q
+            # effect of this loop is similar future credit assignments
+            td_target = r[i] + GAMMA * (1-d[i]) * td_target
             td_current = V[i].detach().numpy()
             if not USE_GAE:
                 advantage = td_target - td_current
             else:
-                td_error = r[i] + GAMMA*(1-d[i])*V[i+1].detach().numpy() - td_current
+                td_error = r[i] + GAMMA * (1-d[i]) * V[i+1].detach().numpy() - td_current
                 advantage = advantage*GAE_TAU*GAMMA*(1-d[i]) + td_error
             A.append(advantage) #array:, num_agents x 1, no grad
             td.append(td_target) #array:, num_agents x 1, no grad
@@ -268,13 +270,14 @@ class PPO_Agent():
         self.optim.step()
 
 
-        self.actor_gain.append(-actor_loss.data.detach().numpy())
-        self.critic_loss.append(critic_loss.data.detach().numpy())
+        self.actor_gain_hist.append(-actor_loss.data.detach().numpy())
+        self.critic_loss_hist.append(critic_loss.data.detach().numpy())
+        self.entropy_hist.append(G_entropy.mean().detach().numpy())
 
         # entropy weight decay
         self.ent_weight = max(self.ent_weight * ENT_DECAY, ENT_MIN)
         # std decay
-        self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
+        #self.std_scale = max(self.std_scale * STD_SCALE_DECAY, STD_SCALE_MIN)
 
 
 class ReplayBuffer:
