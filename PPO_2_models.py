@@ -46,10 +46,13 @@ class PPO_Actor(nn.Module):
         self.bn_3a = nn.BatchNorm1d(hidden_layer2)
         self.fc_3a = nn.Linear(hidden_layer2, hidden_layer3)
 
+        self.bn_4a = nn.BatchNorm1d(hidden_layer3)
         self.fc_4a = nn.Linear(hidden_layer3, action_size)
 
         # std of the distribution for the resampled action
         self.std = nn.Parameter(torch.ones(1, action_size)*0.15)
+
+        self.PReLU = nn.PReLU() # leaky relu
 
         self.to(device)
 
@@ -65,10 +68,10 @@ class PPO_Actor(nn.Module):
     def forward(self, s, resampled_action=None, std_scale=1.0):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
-        s = F.relu(self.fc_1a(self.bn_1a(s))) #linear -> batchnorm -> activation
-        s = F.relu(self.fc_2a(self.bn_2a(s)))
-        s = F.relu(self.fc_3a(self.bn_3a(s)))
-        action_mean = torch.tanh(self.fc_4a(s)) #-> action/critic streams
+        s = self.PReLU(self.fc_1a(self.bn_1a(s))) #linear -> batchnorm -> activation
+        s = self.PReLU(self.fc_2a(self.bn_2a(s)))
+        s = self.PReLU(self.fc_3a(self.bn_3a(s)))
+        action_mean = torch.tanh(self.fc_4a(self.bn_4a(s))) #-> action/critic streams
 
         # action_mean: proposed action, we will then use this action as
         # mean to generate a prob distribution to output log_prob
@@ -125,7 +128,10 @@ class PPO_Critic(nn.Module):
         self.bn_2m = nn.BatchNorm1d(hidden_layer2)
         self.fc_2m = nn.Linear(hidden_layer2, hidden_layer3)
 
+        self.bn_3m = nn.BatchNorm1d(hidden_layer3)
         self.fc_3m = nn.Linear(hidden_layer3, 1)
+
+        self.PReLU = nn.PReLU() # leaky relu
 
         self.to(device)
 
@@ -141,17 +147,17 @@ class PPO_Critic(nn.Module):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # state network
-        s = F.relu(self.fc_1s(self.bn_1m(s)))
+        s = self.PReLU(self.fc_1s(self.bn_1m(s)))
 
         # merge 2 streams to 1 by adding action
         m = torch.cat((s, a), dim=-1)
 
-        m = F.relu(self.fc_1m(m)) # merge
+        m = self.PReLU(self.fc_1m(m)) # merge
 
-        m = F.relu(self.fc_2m(self.bn_2m(m)))
+        m = self.PReLU(self.fc_2m(self.bn_2m(m)))
 
         # td Q value
-        v = F.relu(self.fc_3m(m))
+        v = self.PReLU(self.fc_3m(self.bn_3m(m)))
 
         # final output
         return v
@@ -162,8 +168,8 @@ class PPO_ActorCritic(nn.Module):
 
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.actor = PPO_Actor(state_size, action_size, device, 1024, 1024, 512, seed=seed)
-        self.critic = PPO_Critic(state_size, action_size, device, 1024, 1024, 512, seed=seed)
+        self.actor = PPO_Actor(state_size, action_size, device, 1024, 1024, 1024, seed=seed)
+        self.critic = PPO_Critic(state_size, action_size, device, 1024, 1024, 1024, seed=seed)
 
 
     def forward(self, s, action=None, std_scale=1.0):
