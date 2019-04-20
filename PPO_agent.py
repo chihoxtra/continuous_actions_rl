@@ -11,7 +11,7 @@ from PPO_2_models import PPO_ActorCritic
 BATCH_SIZE = 1024             # batch size of sampling
 MIN_BATCH_NO = 32             # min no of batches needed in the memory before learning
 GAMMA = 0.90                  # discount factor
-T_MAX = 1500                  # max number of time step
+T_MAX = 2048                  # max number of time step
 LR = 1e-4                     # learning rate #5e-4
 OPTIM_EPSILON = 1e-5          # EPS for Adam optimizer
 OPTIM_WGT_DECAY =  1e-4       # Weight Decay for Adam optimizer
@@ -268,7 +268,7 @@ class PPO_Agent():
             U.clip_grad_norm_(self.model_local.parameters(), GRAD_CLIP_MAX)
             self.optim.step()
 
-            self.actor_gain_hist.append(-actor_loss.data.detach().numpy()*100)
+            self.actor_gain_hist.append(-actor_loss.data.detach().numpy())
             self.critic_loss_hist.append(critic_loss.data.detach().numpy())
 
 
