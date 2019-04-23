@@ -28,8 +28,10 @@ class PPO_Actor(nn.Module):
             seed (int): Random seed
             hidden_layer1(int): number of neurons in first hidden layer
             hidden_layer2(int): number of neurons in second hidden layer
+            hidden_layer3(int): number of neurons in second hidden layer
         outputs:
             probability distribution (float) range 0:+1 of sampled action
+            action as recommended by the network range -1:+1
             sampled action range -1:+1
             entropy for noise
         """
@@ -88,7 +90,7 @@ class PPO_Actor(nn.Module):
         log_prob = dist.log_prob(resampled_action).sum(-1).unsqueeze(-1)
         entropy = dist.entropy().mean() #entropy for noise
         # final output
-        return log_prob, resampled_action, entropy
+        return log_prob, action_mean, resampled_action, entropy
 
 
 class PPO_Critic(nn.Module):
@@ -109,6 +111,7 @@ class PPO_Critic(nn.Module):
             seed (int): Random seed
             hidden_layer1(int): number of neurons in first hidden layer
             hidden_layer2(int): number of neurons in second hidden layer
+            hidden_layer3(int): number of neurons in second hidden layer
         outputs:
             V or Q value estimation (float) real number
         """
@@ -118,18 +121,20 @@ class PPO_Critic(nn.Module):
 
         ################# STATE INPUTS ##################
         # input size: batch_size or m x state_size
-        self.bn_1m = nn.BatchNorm1d(state_size)
+        self.bn_1s = nn.BatchNorm1d(state_size)
         self.fc_1s = nn.Linear(state_size, hidden_layer1)
 
         ########### ACTION INPUTS / MERGE LAYERS #########
         # input size: batch_size or num_agents x action sizes
-        self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2)
+        #self.fc_1m = nn.Linear(hidden_layer1+action_size, hidden_layer2)
+        self.bn_2s = nn.BatchNorm1d(hidden_layer1)
+        self.fc_2s = nn.Linear(hidden_layer1, hidden_layer2)
 
-        self.bn_2m = nn.BatchNorm1d(hidden_layer2)
-        self.fc_2m = nn.Linear(hidden_layer2, hidden_layer3)
+        self.bn_3s = nn.BatchNorm1d(hidden_layer2)
+        self.fc_3s = nn.Linear(hidden_layer2, hidden_layer3)
 
-        self.bn_3m = nn.BatchNorm1d(hidden_layer3)
-        self.fc_3m = nn.Linear(hidden_layer3, 1)
+        self.bn_4s = nn.BatchNorm1d(hidden_layer3)
+        self.fc_4s = nn.Linear(hidden_layer3, 1)
 
         self.PReLU = nn.PReLU() # leaky relu
 
@@ -140,24 +145,22 @@ class PPO_Critic(nn.Module):
     def reset_parameters(self):
         # initialize the values
         self.fc_1s.weight.data.uniform_(*weights_init_lim(self.fc_1s))
-        self.fc_2m.weight.data.uniform_(*weights_init_lim(self.fc_2m))
-        self.fc_3m.weight.data.uniform_(-1e-3,1e-3)
+        self.fc_2s.weight.data.uniform_(*weights_init_lim(self.fc_2s))
+        self.fc_3s.weight.data.uniform_(*weights_init_lim(self.fc_3s))
+        self.fc_4s.weight.data.uniform_(-1e-3,1e-3)
 
     def forward(self, s, a):
         """Build a network that maps state -> actions."""
         # state, apply batch norm BEFORE activation
         # state network
-        s = self.PReLU(self.fc_1s(self.bn_1m(s)))
+        s = self.PReLU(self.fc_1s(self.bn_1s(s)))
 
-        # merge 2 streams to 1 by adding action
-        m = torch.cat((s, a), dim=-1)
+        s = self.PReLU(self.fc_2s(self.bn_2s(s)))
 
-        m = self.PReLU(self.fc_1m(m)) # merge
+        s = self.PReLU(self.fc_3s(self.bn_3s(s)))
 
-        m = self.PReLU(self.fc_2m(self.bn_2m(m)))
-
-        # td Q value
-        v = self.PReLU(self.fc_3m(self.bn_3m(m)))
+        # Q value
+        v = self.PReLU(self.fc_4s(self.bn_4s(s)))
 
         # final output
         return v
@@ -173,11 +176,14 @@ class PPO_ActorCritic(nn.Module):
 
 
     def forward(self, s, action=None, std_scale=1.0):
-        log_prob, resampled_action, entropy = self.actor(s, action, std_scale=std_scale)
-        v = self.critic(s, resampled_action)
+        log_prob, action_mean, resampled_action, entropy = self.actor(s, action,
+                                                                      std_scale)
+        if action is None: action = resampled_action
+        v = self.critic(s, action)
 
         pred = {'log_prob': log_prob, # prob dist based on actions generated, grad true,  (num_agents, 1)
-                'a': resampled_action.detach().cpu().numpy(), #sampled action based on prob dist (num_agents,action_size)
+                'a': resampled_action, #sampled action based on prob dist torch (num_agents,action_size)
+                'a_mean': action_mean, #original action as recommended by the network
                 'ent': entropy, #for noise, grad true, (num_agents or m, 1)
                 'v': v #Q score, state's V value, grad true (num_agents or m,1)
                 }

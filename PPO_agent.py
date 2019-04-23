@@ -11,19 +11,19 @@ from PPO_2_models import PPO_ActorCritic
 BATCH_SIZE = 1024             # batch size of sampling
 MIN_BATCH_NO = 32             # min no of batches needed in the memory before learning
 GAMMA = 0.90                  # discount factor
-T_MAX = 2048                  # max number of time step
+T_MAX = 512                   # max number of time step
 LR = 1e-4                     # learning rate #5e-4
 OPTIM_EPSILON = 1e-5          # EPS for Adam optimizer
 OPTIM_WGT_DECAY =  1e-4       # Weight Decay for Adam optimizer
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
 CRITIC_L_WEIGHT = 0.5         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
-#ENT_DECAY = 0.999            # decay of entropy per 'step'
+ENT_DECAY = 0.999             # decay of entropy per 'step'
 #ENT_MIN = 1e-4               # min weight of entropy
 STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
 STD_SCALE_DECAY = 0.999       # scale decay of std
 #STD_SCALE_MIN = 0.1          # min value of STD scale
-P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
+P_RATIO_EPS = 0.1             # eps for ratio clip 1+eps, 1-eps
 EPS_DECAY = 0.999             # decay factor for eps for ppo clip
 USE_GAE = True                # use GAE flag
 GAE_TAU = 0.99                # value control how much agent rely on current estimate
@@ -99,29 +99,24 @@ class PPO_Agent():
         # just for evaluation
         self.model_local.actor.eval()
         with torch.no_grad():
-            _prob, actions, _ent = self.model_local.actor(self._toTorch(state))
+            _prob, _a_mean, action, _ent = self.model_local.actor(self._toTorch(state))
         self.model_local.actor.train()
 
         return np.clip(actions.detach().cpu().numpy(), -1 , 1)
 
 
-    def _collect_trajectory_data(self, train_mode=True):
+    def _collect_trajectory_data(self, train_mode=True, is_collecting=True):
         """
         Collect trajectory data and store them
         output: tuple of list (len: len(states)) of:
-                states, log_probs, actions, rewards, As, TDs
+                states, log_probs, actions, rewards, As, rts
         """
 
         # reset env and running reward
         env_info = self.env.reset(train_mode=train_mode)[self.brain_name] # reset env
         self.running_rewards = np.zeros(self.num_agents)
 
-        s, p, a, r, ns, d, A, V, td = ([] for l in range(9)) #initialization
-        # s, ns: TENSOR: num_agents x state_size (129)
-        # log_prob: #TENSOR: num_agents x 1, require grad
-        # action: np.array: num_agents x action_size
-        # reward, done: np.array: num_agents x 1
-        # V or Q: TENSOR: num_agents x 1, require grad
+        s, p, a, r, ns, d, A, V, rt = ([] for l in range(9)) #initialization
 
         # initial state
         state = self._toTorch(env_info.vector_observations) # tensor: num_agents x state_size
@@ -132,65 +127,69 @@ class PPO_Agent():
             # state -> prob / actions
             state_predict = self.model_local(state, std_scale=self.std_scale)
 
-            action = state_predict['a'] #array, num_agents x action_size no grad
-            action = np.clip(action, -1, 1)
+            action = state_predict['a'] #torch, num_agents x action_size no grad
+            action = np.clip(action.detach().numpy(), -1., 1.)
 
             env_info = self.env.step(action)[self.brain_name]
 
             next_state = self._toTorch(env_info.vector_observations)
             reward = np.array(env_info.rewards) # array: (num_agents,)
-            done = np.array(env_info.local_done) #array: (num_agents,)
+            done = np.array(env_info.local_done) #array: (num_agents,) boolean
 
             # recognize the current reward first
             self.running_rewards += reward
-
-            s.append(state) #TENSOR: num_agents x state_size (129)
-            p.append(state_predict['log_prob']) #tensor: (num_agents x 1), require grad
-            a.append(action) #np.array: num_agents x action_size
-            r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
-            ns.append(next_state) #TENSOR: num_agents x state_size (129)
-            d.append(np.array(done).reshape(-1,1)) #array: num_agents x 1
-            V.append(state_predict['v']) #Q value TENSOR: num_agents x 1, require grad
-
+            if is_collecting:
+                s.append(state) #TENSOR: num_agents x state_size (129)
+                p.append(state_predict['log_prob'].detach()) #tensor: (num_agents x 1), NO grad
+                a.append(state_predict['a']) #tensor: num_agents x action_size
+                r.append(np.array(reward).reshape(-1,1)) #array: num_agents x 1
+                ns.append(next_state) #TENSOR: num_agents x state_size (129)
+                d.append(1.*np.array(done).reshape(-1,1)) #array: num_agents x 1， 1. 0.
+                V.append(state_predict['v'].detach().numpy()) #Q value TENSOR:
+                                                              #num_agents x 1, require grad
             state = next_state
 
-            if np.all(done) or ep_len >= T_MAX: #np.all(done) or
-                self.episodic_rewards.append(np.mean(self.running_rewards))
-                self.total_steps.append(ep_len)
-                break
+            if ep_len >= T_MAX:
+                if is_collecting:
+                    is_collecting = False
+                    last_state = next_state
+
+                if np.all(done) or ep_len == 2000: #only if t_max is reached and np.all done.
+                    self.episodic_rewards.append(np.mean(self.running_rewards))
+                    self.total_steps.append(ep_len)
+                    break
 
             ep_len += 1
 
-        # normalize reward with the latest info
-        #r = [(ri-np.mean(r))/np.std(r) for ri in r]
+        assert(len(s) == T_MAX+1)
 
         # Compute the Advantage/Return value
         # note that last state has no entry in record in V
-        last_state_predict = self.model_local(state)
+        last_state_predict = self.model_local(last_state)
 
         # use td target as return, td error as advantage
         V.append(last_state_predict['v'])
 
         advantage = np.zeros([self.num_agents, 1])
-        td_target = last_state_predict['v'].detach().numpy()
-        for i in reversed(range(ep_len)):
+        returns = last_state_predict['v'].detach().numpy()
+        for i in reversed(range(T_MAX)):
             # effect of this loop is similar future credit assignments
-            td_target = r[i] + GAMMA * (1-d[i]) * td_target
+            returns = r[i] + GAMMA * (1-d[i]) * returns
             #td_current = V[i].detach().numpy()
             if not USE_GAE:
-                advantage = returns - V[i].detach().numpy()
+                advantage = returns - V[i]
             else:
-                td_error = r[i] + GAMMA * (1-d[i]) * V[i+1].detach().numpy() - V[i].detach().numpy()
+                td_error = r[i] + GAMMA * (1-d[i]) * V[i+1] - V[i]
                 advantage = advantage * GAE_TAU * GAMMA * (1-d[i]) + td_error
             A.append(advantage) #array:, num_agents x 1, no grad
-            td.append(td_target) #array:, num_agents x 1, no grad
+            rt.append(returns) #array:, num_agents x 1, no grad
 
         # reverse the list order
         A = A[::-1]
-        td = td[::-1]
+        rt = rt[::-1]
 
         # store data in memory
-        self.memory.add((s, p, a, r, A, td)) #tuple of list by types of data
+        self.memory.add((s, p, a, r, A, rt)) #tuple of list by types of data
 
 
     def step(self, train_mode=True):
@@ -211,6 +210,8 @@ class PPO_Agent():
             randomized_batches = self.memory.retrieve_memory() #sample from memory
             self.learn(randomized_batches) #learn from it and update grad
 
+            # entropy weight decay
+            self.ent_weight *= ENT_DECAY
             # std decay
             self.std_scale *= STD_SCALE_DECAY
             # eps decay
@@ -234,11 +235,11 @@ class PPO_Agent():
                 batch of Advantages: (tensor) batch_size or num_agents x 1
                 batch of Returns/TDs: (tensor) batch_size or num_agents x 1
         """
-        for (s, old_prob, a, r, Advantage, td_target) in randomized_batches:
+        for (s, old_prob, old_actions, r, Advantage, returns_) in randomized_batches:
             #s, p, a, r, Advantage, td_target = m_batch
 
             ############################# ACTOR LOSS ##############################
-            s_predictions = self.model_local(s, a) #use old s, a to get new prob
+            s_predictions = self.model_local(s, old_actions, self.std_scale) #use old s, a to get new prob
             new_prob = s_predictions['log_prob'] # num_agents x 1
             assert(new_prob.requires_grad == True)
             assert(Advantage.requires_grad == False)
@@ -255,10 +256,9 @@ class PPO_Agent():
             actor_loss = -(G_loss + self.ent_weight * s_predictions['ent'].mean())
 
             ############################ CRITIC LOSS ##############################
-            td_current = s_predictions['v'] # # num_agent or m x 1, requires grad
-            assert(td_current.requires_grad == True)
+            assert(s_predictions['v'].requires_grad == True) #num_agent or m x 1, requires grad
 
-            critic_loss = 0.5 * (td_target - td_current).pow(2).mean()
+            critic_loss = 0.5 * (returns_ - s_predictions['v']).pow(2).mean()
 
             # TOTAL LOSS
             total_loss = actor_loss + CRITIC_L_WEIGHT * critic_loss
@@ -298,19 +298,19 @@ class ReplayBuffer:
         """ Add a new experience to memory.
             data: (tuple) states, log_probs, rewards, As, Vs
         """
-        (s_, p_, a_, r_, A_, td_) = single_traj_data #equal lengths
+        (s_, p_, a_, r_, A_, rt_) = single_traj_data #equal lengths
 
-        for s, p, a, r, A, td in zip(s_, p_, a_, r_, A_, td_): #by time step
+        for s, p, a, r, A, rt in zip(s_, p_, a_, r_, A_, rt_): #by time step
             i = 0
             while i < self.num_agents: #by agent
-                e = self.data(s[i,:], p[i,:].detach(), a[i,:], r[i], A[i], td[i])
+                e = self.data(s[i,:], p[i,:].detach(), a[i,:], r[i], A[i], rt[i])
                 self.memory.append(e)
                 i += 1
 
     def retrieve_memory(self):
         """Retrieve all data in memory in randomized order."""
         # convert memory structure into giant listS by data type
-        (all_s, all_p, all_a, all_r, all_A, all_td) = list(zip(*self.memory))
+        (all_s, all_p, all_a, all_r, all_A, all_rt) = list(zip(*self.memory))
         assert(len(all_s) == len(self.memory))
 
         # so that we can normalized Advantage before sampling
@@ -324,7 +324,7 @@ class ReplayBuffer:
         result = []
         for batch_no, sample_ind in enumerate(indices):
             if len(sample_ind) >= self.batch_size / 2:
-                s_s, s_p, s_a, s_r, s_A, s_td = ([] for l in range(6))
+                s_s, s_p, s_a, s_r, s_A, s_rt = ([] for l in range(6))
 
                 i = 0
                 while i < len(sample_ind): #while loop is faster
@@ -333,18 +333,18 @@ class ReplayBuffer:
                     s_a.append(all_a[sample_ind[i]]) #@each array, (action_size,)
                     s_r.append(all_r[sample_ind[i]]) #@each array, 1
                     s_A.append(all_A[sample_ind[i]]) #@each array, 1
-                    s_td.append(all_td[sample_ind[i]]) #@each array, 1
+                    s_rt.append(all_rt[sample_ind[i]]) #@each array, 1
                     i += 1
 
                 # change the format to tensor and make sure dims are correct for calculation
                 s_s = torch.stack(s_s).float().to(device)
-                s_p = torch.stack(s_p).to(device)
-                s_a = torch.from_numpy(np.stack(s_a)).float().to(device)
+                s_p = torch.stack(s_p).float().to(device)
+                s_a = torch.stack(s_a).float().to(device)
                 s_r = torch.from_numpy(np.vstack(s_r)).float().to(device)
                 s_A = torch.from_numpy(np.stack(s_A)).float().to(device)
-                s_td = torch.from_numpy(np.stack(s_td)).float().to(device)
+                s_rt = torch.from_numpy(np.stack(s_rt)).float().to(device)
 
-                result.append((s_s, s_p, s_a, s_r, s_A, s_td))
+                result.append((s_s, s_p, s_a, s_r, s_A, s_rt))
 
         return result
 
