@@ -11,7 +11,8 @@ from PPO_2_models import PPO_ActorCritic
 BATCH_SIZE = 1024             # batch size of sampling
 MIN_BATCH_NO = 32             # min no of batches needed in the memory before learning
 GAMMA = 0.90                  # discount factor
-T_MAX = 512                   # max number of time step
+T_MAX = 512                   # max number of time step for collecting trajectory
+T_MAX_EPS = int(1e4)          # max number of steps before break
 LR = 1e-4                     # learning rate #5e-4
 OPTIM_EPSILON = 1e-5          # EPS for Adam optimizer
 OPTIM_WGT_DECAY =  1e-4       # Weight Decay for Adam optimizer
@@ -102,7 +103,7 @@ class PPO_Agent():
             _prob, _a_mean, action, _ent = self.model_local.actor(self._toTorch(state))
         self.model_local.actor.train()
 
-        return np.clip(actions.detach().cpu().numpy(), -1 , 1)
+        return np.clip(action.detach().cpu().numpy(), -1 , 1)
 
 
     def _collect_trajectory_data(self, train_mode=True, is_collecting=True):
@@ -154,7 +155,7 @@ class PPO_Agent():
                     is_collecting = False
                     last_state = next_state
 
-                if np.all(done) or ep_len == 2000: #only if t_max is reached and np.all done.
+                if np.all(done) or ep_len>=T_MAX_EPS: #only if t_max is reached and np.all done.
                     self.episodic_rewards.append(np.mean(self.running_rewards))
                     self.total_steps.append(ep_len)
                     break
