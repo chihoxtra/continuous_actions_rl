@@ -171,8 +171,8 @@ class PPO_ActorCritic(nn.Module):
 
         super(PPO_ActorCritic, self).__init__()
         self.seed = torch.manual_seed(seed)
-        self.actor = PPO_Actor(state_size, action_size, device, 1024, 1024, 1024, seed=seed)
-        self.critic = PPO_Critic(state_size, action_size, device, 1024, 1024, 1024, seed=seed)
+        self.actor = PPO_Actor(state_size, action_size, device, 1024, 1024, 512, seed=seed)
+        self.critic = PPO_Critic(state_size, action_size, device, 1024, 1024, 512, seed=seed)
 
 
     def forward(self, s, action=None, std_scale=1.0):

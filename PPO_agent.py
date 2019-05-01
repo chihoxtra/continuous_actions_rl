@@ -12,20 +12,19 @@ BATCH_SIZE = 1024             # batch size of sampling
 MIN_BATCH_NO = 32             # min no of batches needed in the memory before learning
 GAMMA = 0.90                  # discount factor
 T_MAX = 512                   # max number of time step for collecting trajectory
-T_MAX_EPS = int(1e4)          # max number of steps before break
-LR = 1e-4                     # learning rate #5e-4
+T_MAX_EPS = int(3e4)          # max number of steps before break
+LR = 1e-5                     # learning rate #5e-4
 OPTIM_EPSILON = 1e-5          # EPS for Adam optimizer
 OPTIM_WGT_DECAY =  1e-4       # Weight Decay for Adam optimizer
 GRAD_CLIP_MAX = 1.0           # max gradient allowed
-CRITIC_L_WEIGHT = 0.5         # mean square error term weight
+CRITIC_L_WEIGHT = 1.0         # mean square error term weight
 ENT_WEIGHT = 0.01             # weight of entropy added
-ENT_DECAY = 0.999             # decay of entropy per 'step'
-#ENT_MIN = 1e-4               # min weight of entropy
+ENT_DECAY = 0.998             # decay of entropy per 'step'
 STD_SCALE_INIT = 1.0          # initial value of std scale for action resampling
-STD_SCALE_DECAY = 0.999       # scale decay of std
-#STD_SCALE_MIN = 0.1          # min value of STD scale
-P_RATIO_EPS = 0.1             # eps for ratio clip 1+eps, 1-eps
-EPS_DECAY = 0.999             # decay factor for eps for ppo clip
+STD_SCALE_DECAY = 0.998       # scale decay of std
+P_RATIO_EPS = 0.2             # eps for ratio clip 1+eps, 1-eps
+EPS_DECAY = 0.998             # decay factor for eps for ppo clip
+NAN_PENALTY = -5.0            # penalty for actions that resulted in nan reward
 USE_GAE = True                # use GAE flag
 GAE_TAU = 0.99                # value control how much agent rely on current estimate
 
@@ -138,7 +137,11 @@ class PPO_Agent():
             done = np.array(env_info.local_done) #array: (num_agents,) boolean
 
             # recognize the current reward first
-            self.running_rewards += reward
+            if not np.isnan(np.any(reward)):
+                self.running_rewards += reward
+            else:
+                self.running_rewards += NAN_PENALTY
+                print("nan reward encountered!")
             if is_collecting:
                 s.append(state) #TENSOR: num_agents x state_size (129)
                 p.append(state_predict['log_prob'].detach()) #tensor: (num_agents x 1), NO grad
@@ -156,7 +159,9 @@ class PPO_Agent():
                     last_state = next_state
 
                 if np.all(done) or ep_len>=T_MAX_EPS: #only if t_max is reached and np.all done.
-                    self.episodic_rewards.append(np.mean(self.running_rewards))
+                    agents_mean_eps_reward = np.mean(self.running_rewards+1e-10)
+                    if not np.isnan(agents_mean_eps_reward):
+                        self.episodic_rewards.append(agents_mean_eps_reward) #avoid nan
                     self.total_steps.append(ep_len)
                     break
 
