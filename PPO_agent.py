@@ -130,7 +130,7 @@ class PPO_Agent():
             action = state_predict['a'] #torch, num_agents x action_size no grad
             action = np.clip(action.detach().numpy(), -1., 1.)
             if np.any(np.isnan(action)):
-                print("nan action encoutered!")
+                print("nan action encountered!")
                 return
 
             env_info = self.env.step(action)[self.brain_name]
