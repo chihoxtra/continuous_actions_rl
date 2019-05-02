@@ -20,7 +20,8 @@ Proximal Policy Optimization (PPO) method was chosen for this task. Here are som
 
 - **Time Horizon.** In the PPO paper, it is mentioned that the algorithm will only collect trajectory data up to a certain time-step T_MAX. This T_MAX is usually much smaller than the actual number of steps needed to complete an episode BUT is comprehensive enough to include all important situations facing the agent. The idea is that in some environment, particularly recurrent environment where there is always new data coming in (like stock price estimation environment, for example), it is possible that there is no definitive ending for an episode and that an episode could run forever. The T_MAX implementation is to tackle situation like this.
 
-- **Advantage Function is needed.** It is needed for 2 reasons. First, we need a way to distinguish a 'good' action as versus a 'bad' action. Secondly, we need an estimator to approximate the value of a state when T_MAX is reached. Here the advantage function is the NET value of taking an action and is estimated by summation of discounted actual reward of a trajectory after an action is taken minus the estimated value of the current state at time-step 0. If the trajectory goes beyond T_MAX, an estimation is made of the value of the last state is made at time-step T_MAX. Note that the role of the critic network here is to make sure the estimation of these values are as close to actual as possible.
+- **Advantage Function is needed.** It is needed for 2 reasons. First, we need a way to distinguish a 'good' action as versus a 'bad' action. Secondly, we need an estimator to approximate the value of a state when T_MAX is reached. Here the advantage function is the NET value of taking an action and is estimated by summation of discounted actual reward of a trajectory after an action is taken minus the estimated value of the current state at time-step 0. If the trajectory goes beyond T_MAX, an estimation is made of the value of the last state is made at time-step T_MAX. Note that the role of the critic network here is to make sure the estimation of these values are as close to actual as possible.<br>
+
 ![The Advantage formual from the PPO paper](https://github.com/chihoxtra/continuous_actions_rl/blob/master/advantage_formula.png)
 
 
@@ -45,6 +46,6 @@ Here are a summary of the hyper parameters used:
 After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 2000 (per episode) across all 12 agents around episode 453th.
 
 Average Reward across 12 agents across episodes<br>
-![Average Reward across 12 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/crawler_score.pngg)
+![Average Reward across 12 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/crawler_score.png)
 
 [Video of the trained agent](https://youtu.be/IfmUzrGqBWA)
