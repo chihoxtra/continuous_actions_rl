@@ -1,6 +1,8 @@
 
 ## Key Learnings on Implementing PPO for Unity Crawler Environment
 
+![12-agent Crawler environment in action](https://github.com/chihoxtra/continuous_actions_rl/blob/master/crawler_screenshot.png)
+
 ### Implementation Details
 
 #### About PPO
@@ -22,30 +24,27 @@ Proximal Policy Optimization (PPO) method was chosen for this task. Here are som
 ![The Advantage formual from the PPO paper](https://github.com/chihoxtra/continuous_actions_rl/blob/master/advantage_formula.png)
 
 
-#### Painstaking Tuning process
-Ultimately, successful training depends on the balance between these 2 network. Hence a similar architecture between these 2 are very important. If one of these network is super powerful compared to the other, then the training would fail. Here I also find that a very careful initialization, appropriate noise adding (as exploration, gradually decrease as we train), and batch normalization helped a lot. Last but not least, grad clipping was applied to both actor and critic network to provide a more stable performance.
+#### Special Implementation Tricks
+For some unknown reasons, the environment could sometime return 'nan' reward. Since nan could result in many computational problem, it is replaced manually by a negative reward to discourage the agent from taking actions that will result in nan reward.
 
 #### Hyper Parameters chosen:
 Here are a summary of the hyper parameters used:
-<table width=600>
-<tr><td>Memory buffer size  </td><td> 1e6    </td></tr>     
-<tr><td>REPLAY_MIN_SIZE  </td><td>  1e5   </td></tr>
-<tr><td>Gamma  </td><td> 0.99    </td></tr>               
-<tr><td>Tau (soft update)  </td><td> 1e-3          </td></tr>           
-<tr><td>Learning Rate  </td><td>  1e-4  </td></tr>
-<tr><td>update target network frequency  </td><td> 2    </td></tr>
-<tr><td>Learning times per step  </td><td> 10    </td></tr>
+<table width=80%>
+<tr><td>Batch Size </td><td> 1024 </td></tr>
+<tr><td>Minimal number of batches for learning </td><td> 32 </td></tr>
+<tr><td>Discount factor, GAMMA </td><td> 0.95 </td></tr>
+<tr><td>Max time horizon </td><td> 512 </td></tr>
+<tr><td>Learning rate </td><td> 1e-4 </td></tr>                    
+<tr><td>Entropy Bonus Weight </td><td> 0.01 </td></tr>        
+<tr><td>epsilon value for surrogate clipping </td><td> 0.1 </td></tr>
+<tr><td>NAN reward penalty </td><td> -5.0 </td></tr>
+<tr><td>GAE Tau </td><td> 0.99 </td></tr>           
 </table>
 
 #### The Result:
-After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 30 (per episode) across all 20 agents over last 100 episodes at around episode 100th (the reason is that the agent is able to maintain a score of over 38 for around 60+ episodes and so after reaching 100 episodes, the average score is still greater than 30). <P>
-Average Reward across 20 agents across episodes<br>
-![Average Reward across 20 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/graph.png)
+After soooooo many different trial and errors, I am glad that I am finally able to reach an average score of over 2000 (per episode) across all 12 agents around episode 453th.
 
-![Trained Agent Capture](https://github.com/chihoxtra/continuous_actions_rl/blob/master/reacher_final_20agents_38score.gif)
+Average Reward across 12 agents across episodes<br>
+![Average Reward across 12 agents across episodes](https://github.com/chihoxtra/continuous_actions_rl/blob/master/crawler_score.pngg)
 
-[Video of the trained agent](https://youtu.be/hlC8Ttg320c)
-
-#### Future Ideas:
-- Implementation of prioritized replay for faster learning
-- Use PPO (actor critic style) instead of DDPG as it is known to provide even better result.
+[Video of the trained agent](https://youtu.be/IfmUzrGqBWA)
