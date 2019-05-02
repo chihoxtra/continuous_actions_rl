@@ -96,11 +96,9 @@ class PPO_Agent():
             state (array_like): current state, # agents x state_space
             action_values (array like, -1:+1) no grad
         """
-        # just for evaluation
-        self.model_local.actor.eval()
         with torch.no_grad():
-            _prob, _a_mean, action, _ent = self.model_local.actor(self._toTorch(state))
-        self.model_local.actor.train()
+            _prob, _a_mean, action, _ent = self.model_local.actor(self._toTorch(state),
+                                                                  std_scale=0.0)
 
         return np.clip(action.detach().cpu().numpy(), -1 , 1)
 
